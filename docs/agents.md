@@ -113,6 +113,15 @@ CORS: `Allow-Origin *`, `Allow-Headers Content-Type, Authorization`, `Allow-Meth
 
 `productName Watermelon DDNS`, `identifier com.watermelon.ddns`, `version 1.0.0`, `windows [{title Watermelon DDNS, width 560, height 680, resizable false}]`, `security.csp null`, `bundle targets all`, icones `icons/32x32.png...icon.icns/icon.ico`.
 
+### 3.6. Tray / Menu Bar (macOS) — “lo que hay ahora + icono arriba” 2026-08-27
+
+Ventana principal se mantiene intacta (`560×680`), se añade **icono en la barra superior macOS** (StatusItem) sin `LSUIElement` (sigue en Dock).
+
+- **Rust `src-tauri/src/lib.rs:1`**: `tauri = { features = ["tray-icon"] }`, `TrayState` con 3 `MenuItem` deshabilitados (`IP actual`, `Subdominio`, `Última IP`) + 3 acciones (`Actualizar ahora`, `Abrir Watermelon DDNS`, `Salir`). `TrayIconBuilder::with_id("main-tray")` con `icon = app.default_window_icon()`, `tooltip Watermelon DDNS`, `menu_on_left_click false`, `on_menu_event` emite `tray-update` / `show` / `exit(0)`, `on_tray_icon_event` left click toggle `show/hide` de la ventana `main`.
+- **Comando `update_tray(app, ip, subdomain, last_ip)`** → `set_text` de los 3 items deshabilitados para que el menú refleje el estado real con el mismo diseño textual (sin ventana extra, misma gráfica de `App.jsx` vía texto).
+- **Frontend `src/App.jsx:1`**: `import {invoke} from "@tauri-apps/api/core"` + `import {listen} from "@tauri-apps/api/event"`, `useEffect` sincroniza `currentIp`/`status` → `invoke("update_tray", {ip, subdomain, lastIp})`, y `listen("tray-update", () => doUpdate())` para que “Actualizar ahora” del menú dispare la misma lógica `getPublicIp() → POST /api/update-ip` que el botón azul.
+- **Resultado:** clic izquierdo en el icono de la barra superior muestra/oculta la ventana; clic derecho abre menú nativo con resumen IP (misma línea de diseño textual, colores del sistema) y acción actualizar. Sin popover HTML extra, pero manteniendo `cargo check` verde (warning `menu_on_left_click` migrado a `show_menu_on_left_click`).
+
 ## 4. Despliegue
 
 ### 4.1. Prerrequisitos SDK Apple
@@ -243,7 +252,8 @@ CORS: `Allow-Origin *`, `Allow-Headers Content-Type, Authorization`, `Allow-Meth
 
 ## 8. Roadmap / pendientes
 
-- [ ] Autostart + system tray (Tauri plugins `autostart`, `tray-icon`, `store` para cifrado at-rest del token vs localStorage).
+- [x] **System tray macOS** (barra superior) — implementado 2026-08-27 `lib.rs:tray-icon` + `App.jsx:invoke update_tray` — clic izq toggle ventana, clic dcho menú con resumen IP + Actualizar/Abrir/Salir, misma línea textual que el dashboard.
+- [ ] Autostart (Tauri plugin `autostart`) + `store` para cifrado at-rest del token vs localStorage.
 - [ ] Soporte IPv6 (`AAAA`) además de `A`.
 - [ ] Rate limit por token + logs de IP histórica (auditoría).
 - [ ] GitHub Actions para builds multiplataforma (macOS universal, Windows msi/nsis, Linux AppImage/deb) y releases.

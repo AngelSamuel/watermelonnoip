@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import "./App.css";
 import logo from "./assets/logo.png";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 const API_BASE = "https://ddns.xwmkt.com";
 const IP_SERVICES = [
@@ -117,6 +119,23 @@ function App() {
       setLoading(false);
     }
   };
+
+  // Sincroniza el menú del tray (arriba) con el estado actual — mantiene lo que hay ahora + icono arriba
+  useEffect(() => {
+    if (!status && currentIp === "-") return;
+    invoke("update_tray", {
+      ip: currentIp || "-",
+      subdomain: status?.subdomain || "-",
+      lastIp: status?.last_ip || "Desconocida",
+    }).catch(() => {});
+  }, [currentIp, status]);
+
+  // Escucha clicks del tray (Actualizar ahora desde el menú)
+  useEffect(() => {
+    let unlisten;
+    listen("tray-update", () => doUpdate()).then((fn) => (unlisten = fn));
+    return () => { if (unlisten) unlisten(); };
+  }, [token, currentIp]);
 
   useEffect(() => {
     if (!token) return;
