@@ -3,6 +3,7 @@ import "./App.css";
 import logo from "./assets/logo.png";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { load } from "@tauri-apps/plugin-store";
 
 const API_BASE = "https://ddns.xwmkt.com";
 const IP_SERVICES = [
@@ -11,6 +12,8 @@ const IP_SERVICES = [
   "https://ifconfig.me/ip",
 ];
 const POLL_MINUTES = 5;
+const TOKEN_KEY = "ddns_token";
+const STORE_FILE = "secure-store.json";
 
 async function getPublicIp() {
   for (const url of IP_SERVICES) {
@@ -42,7 +45,8 @@ function StatusPill({ error, busy }) {
 }
 
 function App() {
-  const [token, setToken] = useState(() => localStorage.getItem("ddns_token") || "");
+  const [booted, setBooted] = useState(false);
+  const [token, setToken] = useState("");
   const [inputToken, setInputToken] = useState("");
   const [status, setStatus] = useState(null);
   const [currentIp, setCurrentIp] = useState("-");
@@ -50,23 +54,74 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const intervalRef = useRef(null);
+  const storeRef = useRef(null);
 
   const addLog = (msg, type = "info") => {
     const ts = new Date().toLocaleTimeString();
     setLogs((prev) => [{ ts, msg, type }, ...prev].slice(0, 50));
   };
 
-  const saveToken = () => {
+  // Arranque: el token se guarda en un archivo propio de la app (fuera del
+  // localStorage del WebView, no accesible desde JS de terceros ni devtools).
+  // Nota: no es un almacén cifrado por el SO, solo deja de estar en el storage
+  // del navegador. Si venimos de una versión anterior que usaba localStorage,
+  // lo migramos una vez y limpiamos el rastro antiguo.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      let resolved = "";
+      try {
+        const store = await load(STORE_FILE, { autoSave: false });
+        storeRef.current = store;
+        let saved = await store.get(TOKEN_KEY);
+        if (!saved) {
+          const legacy = localStorage.getItem(TOKEN_KEY);
+          if (legacy) {
+            await store.set(TOKEN_KEY, legacy);
+            await store.save();
+            localStorage.removeItem(TOKEN_KEY);
+            saved = legacy;
+          }
+        }
+        if (typeof saved === "string" && saved) resolved = saved;
+      } catch (e) {
+        // Red de seguridad si el store no estuviera disponible por algún motivo.
+        resolved = localStorage.getItem(TOKEN_KEY) || "";
+      }
+      if (!cancelled) {
+        if (resolved) setToken(resolved);
+        setBooted(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const saveToken = async () => {
     const t = inputToken.trim();
     if (!t) { setError("Pega el token que te ha dado el admin"); return; }
-    localStorage.setItem("ddns_token", t);
+    try {
+      if (storeRef.current) {
+        await storeRef.current.set(TOKEN_KEY, t);
+        await storeRef.current.save();
+      } else {
+        localStorage.setItem(TOKEN_KEY, t);
+      }
+    } catch (e) {
+      localStorage.setItem(TOKEN_KEY, t);
+    }
     setToken(t);
     setError("");
     addLog("Token guardado");
   };
 
-  const logout = () => {
-    localStorage.removeItem("ddns_token");
+  const logout = async () => {
+    try {
+      if (storeRef.current) {
+        await storeRef.current.delete(TOKEN_KEY);
+        await storeRef.current.save();
+      }
+    } catch (e) {}
+    localStorage.removeItem(TOKEN_KEY);
     setToken("");
     setStatus(null);
     setInputToken("");
@@ -138,12 +193,24 @@ function App() {
   }, [token, currentIp]);
 
   useEffect(() => {
-    if (!token) return;
+    if (!booted || !token) return;
     fetchStatus(token);
     doUpdate(token);
     intervalRef.current = setInterval(() => doUpdate(token), POLL_MINUTES * 60 * 1000);
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
-  }, [token]);
+  }, [booted, token]);
+
+  if (!booted) {
+    return (
+      <main className="container login">
+        <div className="card login-card">
+          <img src={logo} alt="Watermelon" className="brand-logo lg" />
+          <h1>Watermelon DDNS</h1>
+          <p className="subtitle">Cargando…</p>
+        </div>
+      </main>
+    );
+  }
 
   if (!token) {
     return (
@@ -152,7 +219,7 @@ function App() {
           <img src={logo} alt="Watermelon" className="brand-logo lg" />
           <h1>Watermelon DDNS</h1>
           <p className="subtitle">Clon NO-IP para watermelonmarketing.com</p>
-          <p className="help">Pega el token que te ha dado el administrador. Se guarda solo en este equipo.</p>
+          <p className="help">Pega el token que te ha dado el administrador. Se guarda solo en este equipo, fuera del almacenamiento del navegador.</p>
           <input
             type="password"
             placeholder="Token del trabajador"

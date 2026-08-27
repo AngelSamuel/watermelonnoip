@@ -230,6 +230,8 @@
         <div class="toc-group-title">App (Tauri + React)</div>
         <a href="#frontend-stack">Stack y lógica</a>
         <a href="#frontend-marca">Identidad de marca</a>
+        <a href="#frontend-tray">Bandeja del sistema</a>
+        <a href="#frontend-seguridad">Endurecimiento de seguridad</a>
         <a href="#frontend-config">Configuración Tauri</a>
       </div>
       <div class="toc-group">
@@ -285,7 +287,7 @@
 
         <div class="callout mint">
           <strong>Estado actual</strong>
-          Backend en producción en <code>xwmkt</code>, verificado con <code>curl -i https://ddns.xwmkt.com/health → 200</code>. App con identidad de marca de Watermelon Marketing aplicada (agosto 2026) — ver <a href="#frontend-marca">Identidad de marca</a>.
+          Backend en producción en <code>xwmkt</code>, verificado con <code>curl -i https://ddns.xwmkt.com/health → 200</code>. App con identidad de marca de Watermelon Marketing (ver <a href="#frontend-marca">Identidad de marca</a>), icono de bandeja del sistema (ver <a href="#frontend-tray">Bandeja del sistema</a>), CI multiplataforma en GitHub Actions y un endurecimiento de seguridad — token fuera de <code>localStorage</code> y CSP activa (ver <a href="#frontend-seguridad">Endurecimiento de seguridad</a>).
         </div>
       </section>
 
@@ -585,6 +587,56 @@ const POLL_MINUTES = 5;</code></pre>
         </div>
       </section>
 
+      <section class="doc-section" id="frontend-tray">
+        <h3 style="margin-top:0;">Bandeja del sistema (tray)</h3>
+        <p>Implementado en <code>src-tauri/src/lib.rs</code>. La app añade un icono en la bandeja del sistema con un menú (IP actual, subdominio, última IP, "Actualizar ahora", "Abrir Watermelon DDNS", "Salir") y cambia el comportamiento de cierre de ventana:</p>
+        <ul>
+          <li><strong>Cerrar la ventana no cierra la app</strong> — el evento <code>WindowEvent::CloseRequested</code> se intercepta, la ventana se oculta (<code>window.hide()</code>) y se cancela el cierre real (<code>api.prevent_close()</code>). La app sigue viva en segundo plano, sondeando cada 5 minutos. Solo <strong>Salir</strong> desde el menú de la bandeja la termina de verdad.</li>
+          <li><strong>Sincronización con la UI:</strong> el comando <code>update_tray(ip, subdomain, last_ip)</code> se invoca desde <code>App.jsx</code> cada vez que cambian el estado o la IP actual, y actualiza el texto de las tres primeras entradas del menú.</li>
+          <li><strong>"Actualizar ahora" desde la bandeja:</strong> el clic en esa entrada emite el evento <code>tray-update</code> desde Rust; <code>App.jsx</code> lo escucha con <code>listen("tray-update", ...)</code> y dispara el mismo <code>doUpdate()</code> que el botón de la ventana.</li>
+          <li>Un clic izquierdo sobre el icono de la bandeja alterna mostrar/ocultar la ventana principal.</li>
+        </ul>
+        <div class="callout mint">
+          <strong>Importante para los trabajadores</strong>
+          Como la app sigue corriendo tras cerrar la ventana, conviene que sepan que verla en la bandeja del sistema es normal — es justo lo que hace que la actualización automática cada 5 minutos siga funcionando en segundo plano.
+        </div>
+      </section>
+
+      <section class="doc-section" id="frontend-seguridad">
+        <h3 style="margin-top:0;">Endurecimiento de seguridad (agosto 2026)</h3>
+        <p>Tras revisar el modelo de seguridad de la app, se cerraron dos huecos concretos sin tocar el modelo de arquitectura (el token de Cloudflare sigue sin salir nunca del backend — ver <a href="#arquitectura">Arquitectura</a>):</p>
+
+        <h4>Token fuera de <code>localStorage</code></h4>
+        <p>Antes, el token del trabajador se guardaba con <code>localStorage.setItem</code>, dentro del almacén del propio WebView — accesible desde cualquier JavaScript que corriera en esa página (por ejemplo, herramientas de desarrollo o una dependencia comprometida). Ahora se guarda con <a href="https://v2.tauri.app/plugin/store/" target="_blank" rel="noopener">tauri-plugin-store</a>, un archivo (<code>secure-store.json</code>) en el directorio de datos privado de la app, fuera del alcance del <code>localStorage</code> del navegador.</p>
+        <div class="callout">
+          <strong>Precisión importante</strong>
+          Esto <em>no</em> es cifrado a nivel de sistema operativo (no usa el Llavero de macOS ni el Credential Manager de Windows) — es un archivo JSON en texto plano, simplemente fuera del almacenamiento del WebView. Sigue siendo un paso real hacia adelante (deja de ser legible con las herramientas de depuración del propio WebView, o por cualquier script que corra dentro de la página), pero si se quiere protección a nivel de Llavero del sistema, sería un paso adicional — usar el Llavero/Credential Manager nativo desde Rust — que conviene implementar y probar directamente en macOS/Windows/Linux antes de confiar en él, en vez de añadirlo a ciegas.
+        </div>
+        <p>La app migra automáticamente el token de instalaciones anteriores: al arrancar, si no hay nada en el nuevo store pero sí en el <code>localStorage</code> antiguo, lo copia y borra el rastro viejo — el trabajador no tiene que volver a pegar el token.</p>
+
+        <h4>Content-Security-Policy activa</h4>
+        <p>La app tenía <code>"csp": null</code> en <code>tauri.conf.json</code> — sin ninguna política que limitara qué puede cargar o a qué puede conectarse el WebView. Ahora:</p>
+        <div class="code-block">
+          <div class="code-head"><span>json</span><span>app/src-tauri/tauri.conf.json</span></div>
+          <pre><code>"csp": "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https://api.ipify.org https://icanhazip.com https://ifconfig.me https://ddns.xwmkt.com"</code></pre>
+        </div>
+        <p>Solo puede cargar sus propios recursos, las fuentes de Google Fonts, y conectarse por red exactamente a los dominios que la app necesita (los tres servicios de IP y el backend) más el canal interno <code>ipc:</code> que usan <code>invoke()</code>/<code>listen()</code> y el plugin de store. Cualquier otro destino queda bloqueado por el propio WebView, no solo por buenas intenciones del código JS.</p>
+
+        <h4>Qué cambió, archivo por archivo</h4>
+        <ul>
+          <li><code>src-tauri/Cargo.toml</code> — añadida la dependencia <code>tauri-plugin-store = "2"</code>.</li>
+          <li><code>src-tauri/src/lib.rs</code> — registrado <code>.plugin(tauri_plugin_store::Builder::new().build())</code>.</li>
+          <li><code>src-tauri/capabilities/default.json</code> — añadido el permiso <code>"store:default"</code>.</li>
+          <li><code>src-tauri/tauri.conf.json</code> — CSP explícita (arriba).</li>
+          <li><code>package.json</code> — añadida la dependencia JS <code>@tauri-apps/plugin-store</code>.</li>
+          <li><code>src/App.jsx</code> — <code>saveToken</code>/<code>logout</code> ahora escriben en el store; un efecto de arranque migra el token antiguo y muestra "Cargando…" mientras tanto.</li>
+        </ul>
+        <div class="callout">
+          <strong>Un paso manual, una sola vez</strong>
+          Al añadir una dependencia JS nueva (<code>@tauri-apps/plugin-store</code>), hace falta ejecutar <code>npm install</code> dentro de <code>app/</code> una vez antes del próximo <code>npm run tauri build</code> — si no, Vite no encontrará el paquete. La dependencia de Rust (<code>tauri-plugin-store</code>) la descarga <code>cargo</code> solo, sin pasos extra.
+        </div>
+      </section>
+
       <section class="doc-section" id="frontend-config">
         <h3 style="margin-top:0;">Configuración de Tauri</h3>
         <div class="code-block">
@@ -595,16 +647,22 @@ const POLL_MINUTES = 5;</code></pre>
   "version": "1.0.0",
   "app": {
     "windows": [{ "title": "Watermelon DDNS", "width": 560, "height": 680, "resizable": false }],
-    "security": { "csp": null }
+    "security": { "csp": "default-src 'self'; ... (ver Endurecimiento de seguridad)" }
   },
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"]
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "windows": {
+      "iconPath": "icons/icon.ico",
+      "wix": { "language": "es-ES" },
+      "nsis": { "installerIcon": "icons/icon.ico", "installMode": "both", "compression": "lzma" },
+      "webviewInstallMode": { "type": "downloadBootstrapper" }
+    }
   }
 }</code></pre>
         </div>
-        <p>Ventana fija de 560×680, no redimensionable — pensada para una pantalla tipo "panel de estado", no una app de contenido variable. <code>csp: null</code> porque la app necesita llamar a orígenes externos (ipify, backend) libremente.</p>
+        <p>Ventana fija de 560×680, no redimensionable — pensada para una pantalla tipo "panel de estado", no una app de contenido variable. La CSP ya no es <code>null</code> (ver <a href="#frontend-seguridad">Endurecimiento de seguridad</a>). El bloque <code>bundle.windows</code> personaliza el instalador de Windows: idioma español en el instalador WiX (<code>.msi</code>), icono propio en el NSIS (<code>.exe</code>), instalación en modo <code>both</code> (por usuario o para toda la máquina) y descarga del bootstrapper de WebView2 si el equipo no lo tiene.</p>
       </section>
 
       <section class="doc-section" id="deploy-backend">
@@ -691,7 +749,10 @@ npm run tauri build    # → src-tauri/target/release/bundle/macos/Watermelon DD
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
 npm run tauri build -- --target universal-apple-darwin</code></pre>
         </div>
-        <p><strong>Windows/Linux:</strong> Tauri no cruza compilación de <code>.exe</code>/<code>.msi</code> desde macOS — hay que correr <code>npm run tauri build</code> en Windows/Linux directamente, o automatizarlo con GitHub Actions (ver <a href="#roadmap">roadmap</a>).</p>
+        <p><strong>Windows/Linux:</strong> Tauri no cruza compilación de <code>.exe</code>/<code>.msi</code> desde macOS — hay que correr <code>npm run tauri build</code> en Windows/Linux directamente, o dejar que lo haga la <a href="#deploy-ci">GitHub Action</a> ya configurada en el repo.</p>
+
+        <h4 id="deploy-ci">Build multiplataforma automático (GitHub Actions)</h4>
+        <p><code>.github/workflows/build.yml</code> compila los tres binarios en paralelo cada vez que se hace push a <code>main</code> (o manualmente con "Run workflow"): macOS universal, Windows (<code>x86_64-pc-windows-msvc</code>) y Linux (<code>x86_64-unknown-linux-gnu</code>, con <code>libwebkit2gtk-4.1-dev</code>, <code>libappindicator3-dev</code>, <code>librsvg2-dev</code> y <code>patchelf</code> instalados en el runner). Cada job sube sus instaladores como artefacto de la Action — ya no hace falta tener Windows o Linux a mano para generar esos paquetes.</p>
 
         <h4>Icono de la app</h4>
         <p>Si se sustituye el logo, no basta con cambiar <code>icon.png</code> — macOS usa <code>icon.icns</code>, así que hay que regenerar todo el set:</p>
@@ -736,9 +797,12 @@ rm -rf /Library/Caches/com.apple.iconservices.store; killall Finder</code></pre>
         <ul>
           <li><strong>Regla de oro:</strong> nunca pegar una passphrase, API key o token en el chat en texto plano. Generar en el panel web, guardar con <code>read -rsp ...; chmod 600</code> en el servidor, verificar con <code>wc -c</code>, nunca con <code>cat</code>.</li>
           <li><strong>Token por trabajador:</strong> si un equipo se compromete, solo afecta a su propio subdominio — se revoca con <code>remove</code> + <code>add</code> de un token nuevo.</li>
-          <li>El token de Cloudflare está limitado (<em>scoped</em>) a <code>Zone.DNS Edit</code> únicamente sobre <code>watermelonmarketing.com</code>.</li>
-          <li><code>CORS *</code> es aceptable porque el origen real es <code>tauri://localhost</code>; en un endurecimiento futuro podría restringirse explícitamente.</li>
+          <li>El token de Cloudflare está limitado (<em>scoped</em>) a <code>Zone.DNS Edit</code> únicamente sobre <code>watermelonmarketing.com</code> y nunca sale del backend.</li>
+          <li>El token del trabajador ya no vive en el <code>localStorage</code> del WebView — ver <a href="#frontend-seguridad">Endurecimiento de seguridad</a>. Sigue sin ser un almacén cifrado por el sistema operativo; eso queda como mejora pendiente (ver <a href="#roadmap">roadmap</a>).</li>
+          <li>La app tiene una <strong>Content-Security-Policy activa</strong> (antes era <code>null</code>) que limita a qué dominios puede conectarse y qué puede cargar el WebView.</li>
+          <li><code>CORS *</code> en el backend es aceptable porque el origen real es <code>tauri://localhost</code> y la autenticación va por cabecera Bearer (no por cookie, que sí sería vulnerable a CORS abierto); en un endurecimiento futuro podría restringirse explícitamente.</li>
           <li>Transporte siempre por <code>https://ddns.xwmkt.com</code> con Let's Encrypt — el fallback <code>http://</code> es solo para depurar, nunca para producción.</li>
+          <li>Tauri declara permisos mínimos (<code>core:default</code>, <code>opener:default</code>, <code>store:default</code>) — sin acceso a sistema de archivos ni a ejecución de comandos del sistema operativo.</li>
         </ul>
       </section>
 
@@ -764,10 +828,11 @@ rm -rf /Library/Caches/com.apple.iconservices.store; killall Finder</code></pre>
       <section class="doc-section" id="roadmap">
         <h2>Roadmap / pendientes</h2>
         <ul>
-          <li>Autostart + icono en la bandeja del sistema (plugins Tauri <code>autostart</code>, <code>tray-icon</code>, <code>store</code> para cifrar el token en reposo en vez de <code>localStorage</code>).</li>
+          <li><del>Icono en la bandeja del sistema</del> — hecho, ver <a href="#frontend-tray">Bandeja del sistema</a>. Queda pendiente el <strong>autostart</strong> (arrancar la app al iniciar sesión en el equipo, plugin Tauri <code>autostart</code>).</li>
+          <li>Cifrado del token a nivel de sistema operativo (Llavero de macOS / Credential Manager de Windows) — hoy solo está fuera del <code>localStorage</code>, no cifrado por el SO. Ver <a href="#frontend-seguridad">Endurecimiento de seguridad</a>.</li>
           <li>Soporte IPv6 (<code>AAAA</code>) además de <code>A</code>.</li>
           <li>Rate limit por token + histórico de IPs para auditoría.</li>
-          <li>GitHub Actions para builds multiplataforma (macOS universal, Windows msi/nsis, Linux AppImage/deb) y releases automáticos.</li>
+          <li><del>GitHub Actions para builds multiplataforma</del> — hecho, ver <a href="#deploy-ci">Build multiplataforma automático</a>. Queda pendiente publicar releases automáticos (adjuntar los instaladores a un GitHub Release en vez de solo subirlos como artefacto de la Action).</li>
           <li><code>/health</code> con <code>last_ip</code> agregado, para monitorizar con Uptime Kuma (ya corriendo en <code>xwmkt</code>).</li>
           <li>Migración de esquema si la tabla crece: añadir <code>created_at</code>, <code>failed_attempts</code>.</li>
         </ul>
@@ -780,7 +845,8 @@ rm -rf /Library/Caches/com.apple.iconservices.store; killall Finder</code></pre>
             <tbody>
               <tr><td>Repositorio</td><td><code>git@github.com:AngelSamuel/watermelonnoip.git</code> (branch <code>main</code>)</td></tr>
               <tr><td>Backend</td><td><code>server/src/index.js</code> · <code>server/src/cloudflare.js</code> · <code>server/src/db.js</code></td></tr>
-              <tr><td>Frontend</td><td><code>app/src/App.jsx</code> · <code>app/src-tauri/tauri.conf.json</code></td></tr>
+              <tr><td>Frontend</td><td><code>app/src/App.jsx</code> · <code>app/src-tauri/tauri.conf.json</code> · <code>app/src-tauri/src/lib.rs</code></td></tr>
+              <tr><td>CI</td><td><code>.github/workflows/build.yml</code> — build multiplataforma en cada push a <code>main</code></td></tr>
               <tr><td>Infra</td><td><code>root@xwmkt.com -p50050</code> · <code>/root/hetzner/xwmkt/docker-compose.yaml</code> · <code>/opt/ddns-backend/</code></td></tr>
               <tr><td>Dominios</td><td><code>watermelonmarketing.com</code> (zona Cloudflare) · <code>ddns.xwmkt.com</code> (NPM → contenedor backend)</td></tr>
               <tr><td>Fuente de esta página</td><td><code>docs/agents.md</code> + inspección directa del código fuente, 2026-08-27</td></tr>

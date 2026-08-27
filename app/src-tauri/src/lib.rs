@@ -29,6 +29,7 @@ fn update_tray(app: tauri::AppHandle, ip: String, subdomain: String, last_ip: St
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_store::Builder::new().build())
         .invoke_handler(tauri::generate_handler![greet, update_tray])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
