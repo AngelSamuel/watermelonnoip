@@ -64,3 +64,40 @@ jobs:
             app/src-tauri/target/**/Watermelon*.msi
             app/src-tauri/target/**/Watermelon*.exe
           if-no-files-found: warn
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: npm audit (app)
+        working-directory: app
+        run: npm audit --audit-level=high
+        continue-on-error: true
+
+      - name: npm audit (server)
+        working-directory: server
+        run: |
+          npm install --package-lock-only
+          npm audit --audit-level=high
+        continue-on-error: true
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri -> target
+
+      - name: cargo audit
+        working-directory: app/src-tauri
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
+        continue-on-error: true

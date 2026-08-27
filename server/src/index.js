@@ -1,17 +1,45 @@
 const express = require("express");
+const rateLimit = require("express-rate-limit");
 const db = require("./db");
 const { getOrCreateRecord, updateRecord } = require("./cloudflare");
 
 const app = express();
 app.use(express.json());
+
+// Orígenes reales del WebView de Tauri v2. No es "tauri://localhost" en todas
+// las plataformas: Windows usa "http://tauri.localhost". Se admiten los tres
+// para no romper ningún sistema operativo por una CORS demasiado estricta.
+const ALLOWED_ORIGINS = new Set([
+  "tauri://localhost",
+  "http://tauri.localhost",
+  "https://tauri.localhost",
+]);
+
 app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*");
+  const origin = req.headers.origin;
+  // Sin cabecera Origin (curl, healthchecks, monitorización) no es una petición
+  // CORS real, así que no hace falta restringirla aquí.
+  if (!origin || ALLOWED_ORIGINS.has(origin)) {
+    res.header("Access-Control-Allow-Origin", origin || "*");
+  }
   res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
   res.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
 app.set("trust proxy", true);
+
+// Límite de peticiones por IP en /api/*. La app solo llama aquí cada 5 min
+// (o al pulsar "Actualizar ahora"), así que 30 peticiones/minuto es margen de
+// sobra para uso legítimo y corta de raíz cualquier martilleo del endpoint.
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Demasiadas peticiones, inténtalo de nuevo en un minuto" },
+});
+app.use("/api/", apiLimiter);
 
 function getWorkerFromReq(req) {
   const auth = req.headers.authorization;

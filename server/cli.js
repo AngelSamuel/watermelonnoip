@@ -12,6 +12,7 @@ Uso:
   node cli.js list                            Lista todos los trabajadores
   node cli.js remove <subdominio>              Elimina un trabajador
   node cli.js token <subdominio>               Muestra el token de un trabajador existente
+  node cli.js rotate <subdominio>              Genera un token nuevo e invalida el anterior
 `);
 }
 
@@ -24,10 +25,11 @@ if (cmd === "add") {
     process.exit(1);
   }
   const token = genToken();
+  const now = new Date().toISOString();
   try {
     db.prepare(
-      "INSERT INTO workers (name, subdomain, token) VALUES (?, ?, ?)"
-    ).run(name, subdomain, token);
+      "INSERT INTO workers (name, subdomain, token, created_at) VALUES (?, ?, ?, ?)"
+    ).run(name, subdomain, token, now);
     console.log(`Trabajador creado.`);
     console.log(`  Nombre:     ${name}`);
     console.log(`  Subdominio: ${subdomain}.watermelonmarketing.com`);
@@ -38,7 +40,7 @@ if (cmd === "add") {
     process.exit(1);
   }
 } else if (cmd === "list") {
-  const rows = db.prepare("SELECT id, name, subdomain, last_ip, updated_at FROM workers").all();
+  const rows = db.prepare("SELECT id, name, subdomain, last_ip, created_at, updated_at FROM workers").all();
   if (rows.length === 0) {
     console.log("No hay trabajadores registrados.");
   } else {
@@ -60,6 +62,22 @@ if (cmd === "add") {
     process.exit(1);
   }
   console.log(worker.token);
+} else if (cmd === "rotate") {
+  const [subdomain] = args;
+  if (!subdomain) {
+    console.error("Uso: node cli.js rotate <subdominio>");
+    process.exit(1);
+  }
+  const worker = db.prepare("SELECT id FROM workers WHERE subdomain = ?").get(subdomain);
+  if (!worker) {
+    console.error("No se encontró ese subdominio.");
+    process.exit(1);
+  }
+  const newToken = genToken();
+  db.prepare("UPDATE workers SET token = ? WHERE id = ?").run(newToken, worker.id);
+  console.log(`Token rotado para ${subdomain}.`);
+  console.log(`  Token nuevo: ${newToken}`);
+  console.log(`\nEl token anterior deja de funcionar inmediatamente. Entrega el nuevo al trabajador — tendrá que pegarlo de nuevo en la app.`);
 } else {
   printUsage();
 }

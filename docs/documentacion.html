@@ -225,6 +225,7 @@
         <a href="#backend-cloudflare">Integración Cloudflare</a>
         <a href="#backend-docker">Docker</a>
         <a href="#backend-cli">CLI de administración</a>
+        <a href="#backend-hardening">Endurecimiento del backend</a>
       </div>
       <div class="toc-group">
         <div class="toc-group-title">App (Tauri + React)</div>
@@ -484,32 +485,61 @@ NOIPPROPIO/<br>
 
       <section class="doc-section" id="backend-docker">
         <h3 style="margin-top:0;">Docker</h3>
-        <p><code>better-sqlite3</code> compila un módulo nativo, así que la imagen necesita herramientas de build:</p>
+        <p><code>better-sqlite3</code> compila un módulo nativo, así que hace falta una etapa de build con herramientas de compilación — pero esas herramientas no deberían viajar en la imagen final. Desde el endurecimiento de agosto 2026, el build es de dos etapas:</p>
         <div class="code-block">
           <div class="code-head"><span>Dockerfile</span><span>server/Dockerfile</span></div>
-          <pre><code>FROM node:20-alpine
+          <pre><code># Etapa de build: aquí sí hacen falta python3/make/g++ para compilar better-sqlite3
+FROM node:20-alpine AS builder
 WORKDIR /app
 RUN apk add --no-cache python3 make g++
 COPY package.json ./
 RUN npm install --omit=dev
 COPY . .
+
+# Etapa final: imagen limpia, sin toolchain de compilación, sin usuario root
+FROM node:20-alpine
+WORKDIR /app
+COPY --from=builder /app ./
+RUN chown -R node:node /app
+USER node
 EXPOSE 3000
 CMD ["node", "src/index.js"]</code></pre>
         </div>
         <p>En <code>docker-compose.yaml</code> (host <code>xwmkt</code>) el servicio monta <code>/opt/ddns-backend/data</code> como volumen <code>/app/data</code> y solo expone el puerto 3000 internamente (<code>expose</code>, no <code>ports</code>) — la única entrada pública es vía Nginx Proxy Manager.</p>
+        <div class="callout">
+          <strong>Paso manual obligatorio antes de redesplegar</strong>
+          El contenedor ahora corre como el usuario <code>node</code> (uid 1000), no como <code>root</code>. Si <code>/opt/ddns-backend/data</code> en el host pertenece a <code>root</code> (lo normal, se creó con <code>mkdir</code> por SSH), el contenedor nuevo no podrá escribir <code>ddns.db</code> y el backend fallará al arrancar. Antes de hacer <code>docker-compose up -d --build ddns-backend</code>, ejecuta una vez en <code>xwmkt</code>:
+          <div class="code-block" style="margin-top:10px;">
+            <div class="code-head"><span>bash</span><span>en xwmkt, una sola vez</span></div>
+            <pre><code>chown -R 1000:1000 /opt/ddns-backend/data</code></pre>
+          </div>
+        </div>
       </section>
 
       <section class="doc-section" id="backend-cli">
         <h3 style="margin-top:0;">CLI de administración</h3>
-        <p><code>server/cli.js</code>, se ejecuta dentro del contenedor. Gestiona altas, bajas y consulta de trabajadores directamente sobre la base SQLite.</p>
+        <p><code>server/cli.js</code>, se ejecuta dentro del contenedor. Gestiona altas, bajas, rotación y consulta de trabajadores directamente sobre la base SQLite.</p>
         <div class="code-block">
           <div class="code-head"><span>bash</span><span>dentro del contenedor xwmkt_ddns-backend_1</span></div>
           <pre><code>node cli.js add "Samuel" samuel   # crea el trabajador, imprime su token una vez
-node cli.js list                  # tabla id / name / subdomain / last_ip / updated_at
+node cli.js list                  # tabla id / name / subdomain / last_ip / created_at / updated_at
 node cli.js token samuel          # reimprime el token de un trabajador existente
+node cli.js rotate samuel         # genera un token nuevo; el anterior deja de servir al instante
 node cli.js remove samuel         # elimina el trabajador (revoca su acceso)</code></pre>
         </div>
-        <p>El token se genera con <code>crypto.randomBytes(32).toString("hex")</code> — 64 caracteres hexadecimales, único por columna <code>UNIQUE</code> en la tabla.</p>
+        <p>El token se genera con <code>crypto.randomBytes(32).toString("hex")</code> — 64 caracteres hexadecimales, único por columna <code>UNIQUE</code> en la tabla. La tabla guarda también <code>created_at</code> (fecha de alta del trabajador) para poder auditar tokens antiguos con <code>list</code> y decidir cuándo rotarlos a mano.</p>
+      </section>
+
+      <section class="doc-section" id="backend-hardening">
+        <h3 style="margin-top:0;">Endurecimiento del backend (agosto 2026)</h3>
+        <ul>
+          <li><strong>Rate limiting:</strong> <code>express-rate-limit</code> en todo <code>/api/*</code>, 30 peticiones por IP y minuto. La app solo llama cada 5 minutos (o al pulsar "Actualizar ahora"), así que no afecta al uso normal, pero corta de raíz cualquier martilleo del endpoint.</li>
+          <li><strong>CORS ya no es <code>*</code> sin más:</strong> se restringe a los orígenes reales del WebView de Tauri — <code>tauri://localhost</code>, y también <code>http://tauri.localhost</code>/<code>https://tauri.localhost</code>, que es el origen que usa Windows y que una CORS mal configurada rompería silenciosamente solo en ese sistema operativo. Peticiones sin cabecera <code>Origin</code> (curl, healthchecks) no se ven afectadas — CORS es una restricción de navegador, no de servidor.</li>
+        </ul>
+        <div class="callout mint">
+          <strong>Por qué esto era de riesgo bajo incluso antes</strong>
+          La autenticación va por cabecera <code>Bearer</code>, no por cookie — un CORS abierto no permite a una web maliciosa "robar" la sesión de nadie, porque el navegador no adjunta el token automáticamente como sí haría con una cookie. Aun así, restringir el origen es una capa extra de higiene sin coste para el uso legítimo.
+        </div>
       </section>
 
       <section class="doc-section" id="frontend-stack">
@@ -753,6 +783,7 @@ npm run tauri build -- --target universal-apple-darwin</code></pre>
 
         <h4 id="deploy-ci">Build multiplataforma automático (GitHub Actions)</h4>
         <p><code>.github/workflows/build.yml</code> compila los tres binarios en paralelo cada vez que se hace push a <code>main</code> (o manualmente con "Run workflow"): macOS universal, Windows (<code>x86_64-pc-windows-msvc</code>) y Linux (<code>x86_64-unknown-linux-gnu</code>, con <code>libwebkit2gtk-4.1-dev</code>, <code>libappindicator3-dev</code>, <code>librsvg2-dev</code> y <code>patchelf</code> instalados en el runner). Cada job sube sus instaladores como artefacto de la Action — ya no hace falta tener Windows o Linux a mano para generar esos paquetes.</p>
+        <p>Un segundo job, <code>audit</code>, corre en paralelo y revisa dependencias en busca de vulnerabilidades conocidas: <code>npm audit</code> sobre <code>app/</code> y <code>server/</code>, y <code>cargo audit</code> sobre <code>app/src-tauri</code>. Es informativo (<code>continue-on-error: true</code>) — avisa en el resumen de la Action sin bloquear el build, para no romper el pipeline por un aviso que aún no se ha triado.</p>
 
         <h4>Icono de la app</h4>
         <p>Si se sustituye el logo, no basta con cambiar <code>icon.png</code> — macOS usa <code>icon.icns</code>, así que hay que regenerar todo el set:</p>
@@ -798,12 +829,20 @@ rm -rf /Library/Caches/com.apple.iconservices.store; killall Finder</code></pre>
           <li><strong>Regla de oro:</strong> nunca pegar una passphrase, API key o token en el chat en texto plano. Generar en el panel web, guardar con <code>read -rsp ...; chmod 600</code> en el servidor, verificar con <code>wc -c</code>, nunca con <code>cat</code>.</li>
           <li><strong>Token por trabajador:</strong> si un equipo se compromete, solo afecta a su propio subdominio — se revoca con <code>remove</code> + <code>add</code> de un token nuevo.</li>
           <li>El token de Cloudflare está limitado (<em>scoped</em>) a <code>Zone.DNS Edit</code> únicamente sobre <code>watermelonmarketing.com</code> y nunca sale del backend.</li>
-          <li>El token del trabajador ya no vive en el <code>localStorage</code> del WebView — ver <a href="#frontend-seguridad">Endurecimiento de seguridad</a>. Sigue sin ser un almacén cifrado por el sistema operativo; eso queda como mejora pendiente (ver <a href="#roadmap">roadmap</a>).</li>
+          <li>El token del trabajador ya no vive en el <code>localStorage</code> del WebView — ver <a href="#frontend-seguridad">Endurecimiento de seguridad</a>. Sigue sin ser un almacén cifrado por el sistema operativo; eso queda como mejora pendiente explicada más abajo.</li>
           <li>La app tiene una <strong>Content-Security-Policy activa</strong> (antes era <code>null</code>) que limita a qué dominios puede conectarse y qué puede cargar el WebView.</li>
-          <li><code>CORS *</code> en el backend es aceptable porque el origen real es <code>tauri://localhost</code> y la autenticación va por cabecera Bearer (no por cookie, que sí sería vulnerable a CORS abierto); en un endurecimiento futuro podría restringirse explícitamente.</li>
+          <li>El backend tiene <strong>rate limiting</strong> (30 req/min por IP en <code>/api/*</code>) y <strong>CORS restringido</strong> a los orígenes reales del WebView de Tauri — ver <a href="#backend-hardening">Endurecimiento del backend</a>.</li>
           <li>Transporte siempre por <code>https://ddns.xwmkt.com</code> con Let's Encrypt — el fallback <code>http://</code> es solo para depurar, nunca para producción.</li>
           <li>Tauri declara permisos mínimos (<code>core:default</code>, <code>opener:default</code>, <code>store:default</code>) — sin acceso a sistema de archivos ni a ejecución de comandos del sistema operativo.</li>
+          <li>El backend corre en el contenedor como usuario sin privilegios (<code>node</code>, no <code>root</code>), en una imagen final sin herramientas de compilación.</li>
+          <li>Los tokens se pueden rotar con <code>node cli.js rotate &lt;subdominio&gt;</code> sin dar de baja y de alta al trabajador.</li>
         </ul>
+
+        <div class="callout">
+          <strong>Lo que queda deliberadamente sin resolver, y por qué</strong>
+          <p style="margin:6px 0 10px;"><strong>Cifrado del token por el sistema operativo</strong> (Llavero de macOS / Credential Manager de Windows): la vía natural es el crate de Rust <code>keyring</code>, pero su API cambió varias veces entre versiones y no logré verificar con fuentes fiables la firma exacta de sus funciones para la versión actual. Añadir a ciegas una dependencia nativa que compila distinto en macOS/Windows/Linux, sin poder probar el compilado aquí, se traduce en riesgo real de romper tu build o el CI en alguna plataforma por un detalle de API que no pude confirmar. Prefiero decírtelo claro a adivinar.</p>
+          <p style="margin:0;"><strong>Firma de código de los instaladores</strong> (evita el aviso "Editor desconocido" de Windows SmartScreen y el bloqueo de Gatekeeper en macOS): esto no es algo que se resuelva con código — hace falta que tú obtengas un certificado de firma de Windows (de una CA) y una cuenta de Apple Developer Program (99 $/año) para notarización en macOS. Puedo dejar preparado el workflow de GitHub Actions para firmar automáticamente en cuanto tengas esos certificados, pero añadir esa configuración ahora, sin certificados reales para probarla, es exactamente el mismo tipo de cambio a ciegas que quiero evitarte en tu CI ya funcional.</p>
+        </div>
       </section>
 
       <section class="doc-section" id="troubleshooting">
@@ -829,9 +868,10 @@ rm -rf /Library/Caches/com.apple.iconservices.store; killall Finder</code></pre>
         <h2>Roadmap / pendientes</h2>
         <ul>
           <li><del>Icono en la bandeja del sistema</del> — hecho, ver <a href="#frontend-tray">Bandeja del sistema</a>. Queda pendiente el <strong>autostart</strong> (arrancar la app al iniciar sesión en el equipo, plugin Tauri <code>autostart</code>).</li>
-          <li>Cifrado del token a nivel de sistema operativo (Llavero de macOS / Credential Manager de Windows) — hoy solo está fuera del <code>localStorage</code>, no cifrado por el SO. Ver <a href="#frontend-seguridad">Endurecimiento de seguridad</a>.</li>
+          <li>Cifrado del token a nivel de sistema operativo (Llavero de macOS / Credential Manager de Windows) — ver la nota en <a href="#seguridad">Seguridad</a> sobre por qué no se implementó a ciegas.</li>
+          <li>Firma de código de los instaladores (Windows + notarización macOS) — requiere certificados que solo tú puedes obtener; ver <a href="#seguridad">Seguridad</a>.</li>
           <li>Soporte IPv6 (<code>AAAA</code>) además de <code>A</code>.</li>
-          <li>Rate limit por token + histórico de IPs para auditoría.</li>
+          <li><del>Rate limit</del> — hecho, ver <a href="#backend-hardening">Endurecimiento del backend</a>. Queda pendiente un histórico de IPs por trabajador para auditoría (más allá de <code>last_ip</code>/<code>updated_at</code>).</li>
           <li><del>GitHub Actions para builds multiplataforma</del> — hecho, ver <a href="#deploy-ci">Build multiplataforma automático</a>. Queda pendiente publicar releases automáticos (adjuntar los instaladores a un GitHub Release en vez de solo subirlos como artefacto de la Action).</li>
           <li><code>/health</code> con <code>last_ip</code> agregado, para monitorizar con Uptime Kuma (ya corriendo en <code>xwmkt</code>).</li>
           <li>Migración de esquema si la tabla crece: añadir <code>created_at</code>, <code>failed_attempts</code>.</li>
