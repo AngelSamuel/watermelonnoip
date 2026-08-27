@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import "./App.css";
+import logo from "./assets/logo.png";
 
 const API_BASE = "https://ddns.xwmkt.com";
 const IP_SERVICES = [
@@ -27,6 +28,17 @@ async function getPublicIp() {
   throw new Error("No se pudo obtener la IP pública");
 }
 
+function StatusPill({ error, busy }) {
+  const cls = error ? "status-pill error" : busy ? "status-pill busy" : "status-pill";
+  const label = error ? "Error" : busy ? "Actualizando" : "Al día";
+  return (
+    <span className={cls}>
+      <span className="dot" />
+      {label}
+    </span>
+  );
+}
+
 function App() {
   const [token, setToken] = useState(() => localStorage.getItem("ddns_token") || "");
   const [inputToken, setInputToken] = useState("");
@@ -37,9 +49,9 @@ function App() {
   const [error, setError] = useState("");
   const intervalRef = useRef(null);
 
-  const addLog = (msg) => {
+  const addLog = (msg, type = "info") => {
     const ts = new Date().toLocaleTimeString();
-    setLogs((prev) => [`[${ts}] ${msg}`, ...prev].slice(0, 50));
+    setLogs((prev) => [{ ts, msg, type }, ...prev].slice(0, 50));
   };
 
   const saveToken = () => {
@@ -69,7 +81,7 @@ function App() {
       if (!res.ok) throw new Error(data.error || "Token inválido");
       setStatus(data);
     } catch (e) {
-      addLog(`Status error: ${e.message}`);
+      addLog(`Status error: ${e.message}`, "err");
     }
   };
 
@@ -92,15 +104,15 @@ function App() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Error del servidor");
       if (data.status === "unchanged") {
-        addLog(`Sin cambios — ${data.subdomain} ya apunta a ${ip}`);
+        addLog(`Sin cambios — ${data.subdomain} ya apunta a ${ip}`, "success");
       } else {
-        addLog(`Actualizado — ${data.subdomain} → ${ip}`);
+        addLog(`Actualizado — ${data.subdomain} → ${ip}`, "success");
       }
       await fetchStatus(activeToken);
     } catch (e) {
       const msg = e.message || String(e);
       setError(msg);
-      addLog(`Error: ${msg}`);
+      addLog(`Error: ${msg}`, "err");
     } finally {
       setLoading(false);
     }
@@ -117,7 +129,8 @@ function App() {
   if (!token) {
     return (
       <main className="container login">
-        <div className="card">
+        <div className="card login-card">
+          <img src={logo} alt="Watermelon" className="brand-logo lg" />
           <h1>Watermelon DDNS</h1>
           <p className="subtitle">Clon NO-IP para watermelonmarketing.com</p>
           <p className="help">Pega el token que te ha dado el administrador. Se guarda solo en este equipo.</p>
@@ -139,12 +152,21 @@ function App() {
   return (
     <main className="container">
       <header>
-        <h1>Watermelon DDNS</h1>
+        <div className="brand">
+          <img src={logo} alt="Watermelon" className="brand-logo" />
+          <div className="brand-text">
+            <h1>Watermelon DDNS</h1>
+          </div>
+        </div>
         <button className="ghost" onClick={logout}>Cerrar sesión</button>
       </header>
 
       {status ? (
         <div className="card">
+          <div className="row">
+            <span>Estado</span>
+            <StatusPill error={!!error} busy={loading} />
+          </div>
           <div className="row"><span>Trabajador:</span><strong>{status.worker_name}</strong></div>
           <div className="row"><span>Subdominio:</span><strong>{status.subdomain}</strong></div>
           <div className="row"><span>Última IP (servidor):</span><strong>{status.last_ip}</strong></div>
@@ -156,7 +178,10 @@ function App() {
       )}
 
       <div className="actions">
-        <button onClick={() => doUpdate()} disabled={loading}>{loading ? "Actualizando..." : "Actualizar ahora"}</button>
+        <button onClick={() => doUpdate()} disabled={loading}>
+          {loading && <span className="spinner" />}
+          {loading ? "Actualizando..." : "Actualizar ahora"}
+        </button>
         <span className="hint">Auto cada {POLL_MINUTES} min · {loading ? "en curso" : "en espera"}</span>
       </div>
 
@@ -164,11 +189,21 @@ function App() {
 
       <div className="card logs">
         <h3>Log</h3>
-        {logs.length === 0 ? <small>Sin eventos aún</small> : logs.map((l, i) => <div key={i} className="log-line">{l}</div>)}
+        {logs.length === 0 ? (
+          <small className="logs-empty">Sin eventos aún</small>
+        ) : (
+          <div className="log-scroll">
+            {logs.map((l, i) => (
+              <div key={i} className={`log-line ${l.type === "success" ? "success" : l.type === "err" ? "err" : ""}`}>
+                [{l.ts}] {l.msg}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <footer>
-        <small>Universal macOS (Intel + Apple Silicon) · Windows · Linux — No depende de NO-IP.</small>
+        <small>Universal macOS (Intel + Apple Silicon)<span className="sep">·</span>Windows<span className="sep">·</span>Linux — No depende de NO-IP.</small>
       </footer>
     </main>
   );

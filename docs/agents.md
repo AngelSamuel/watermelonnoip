@@ -41,7 +41,7 @@ App multiplataforma **Tauri v2 (React)** que replica NO-IP DUC pero contra **Clo
 
 ```
 NOIPPROPIO/
-├── docs/agents.md                # este fichero
+├── docs/agents.md                # este fichero (actualizado tras rediseño Claude 2026-08-27)
 ├── server/                       # backend desplegado en /opt/ddns-backend
 │   ├── package.json              # express, better-sqlite3
 │   ├── Dockerfile                # node:20-alpine + python3 make g++ (para better-sqlite3)
@@ -51,17 +51,21 @@ NOIPPROPIO/
 │       ├── index.js              # Express: GET /health, GET /api/status, POST /api/update-ip + CORS
 │       ├── db.js                 # better-sqlite3 init, tabla workers
 │       └── cloudflare.js         # getOrCreateRecord / updateRecord (ttl 120, proxied false)
-└── app/                          # Tauri v2 + React (create-tauri-app)
+└── app/                          # Tauri v2 + React (create-tauri-app) — rediseño Claude 2026-08-27
     ├── package.json              # react 19, @tauri-apps/api, @tauri-apps/cli
-    ├── src/App.jsx               # UI login/dashboard + polling 5min + ipify fallbacks
-    ├── src/App.css
-    ├── src/main.jsx
+    ├── index.html                # lang es, favicon.png, Google Fonts Poppins+Inter, title Watermelon DDNS
+    ├── src/
+    │   ├── App.jsx               # StatusPill, brand-logo, polling 5min, logs {ts,msg,type}
+    │   ├── App.css               # CSS vars wm-* (red #ff2952, mint #8cd2c9), gradients, dark mode
+    │   ├── main.jsx
+    │   └── assets/logo.png       # 45K brand logo (nuevo), react.svg
+    ├── public/favicon.png        # 8.2K (nuevo), tauri.svg, vite.svg
     ├── vite.config.js
     └── src-tauri/
         ├── tauri.conf.json       # productName Watermelon DDNS, id com.watermelon.ddns, window 560x680
         ├── Cargo.toml / Cargo.lock
         ├── src/main.rs / lib.rs
-        └── icons/                # icon.png, icon.icns, icon.ico, etc.
+        └── icons/                # icon.png (Wm negro), icon.icns, icon.ico, etc.
 ```
 
 ### 3.1. Esquema DB
@@ -93,15 +97,17 @@ CORS: `Allow-Origin *`, `Allow-Headers Content-Type, Authorization`, `Allow-Meth
 - `getOrCreateRecord(subdomain, ip)` → `GET /zones/<ZONE_ID>/dns_records?type=A&name=<sub>.watermelonmarketing.com` si no existe hace `POST` con `ttl 120, proxied false`.
 - `updateRecord(recordId, subdomain, newIp)` → `PUT /zones/<ZONE_ID>/dns_records/<id>`.
 
-### 3.4. App Tauri (app/src/App.jsx)
+### 3.4. App Tauri (app/src/App.jsx) — rediseño Claude 2026-08-27 21:16
 
-- `API_BASE = "https://ddns.xwmkt.com"`.
-- `POLL_MINUTES = 5`, `IP_SERVICES = [ipify, icanhazip, ifconfig.me]`, `getPublicIp()` itera con fallback, parsea JSON o texto plano.
-- Estado: `token` (localStorage `ddns_token`), `inputToken`, `status`, `currentIp`, `logs[]`, `loading`, `error`.
-- `saveToken()` valida y guarda, `logout()` limpia y corta intervalo.
-- `fetchStatus(token)` → `GET /api/status`, `doUpdate(token)` → `getPublicIp()` + `POST /api/update-ip`, `addLog()` con timestamp.
-- `useEffect` al tener token: `fetchStatus` + `doUpdate` + `setInterval(POLL*60*1000)`.
-- UI: login (input password + botón Guardar) vs dashboard (5 filas: Trabajador/Subdominio/Última IP servidor/IP actual/Última actualización) + `Actualizar ahora` + hint `Auto cada 5 min` + banner error + log scroll (50 líneas) + footer “Universal macOS…”.
+- `API_BASE = "https://ddns.xwmkt.com"`, `POLL_MINUTES = 5`, `IP_SERVICES = [ipify, icanhazip, ifconfig.me]`, `getPublicIp()` fallback JSON/texto.
+- **Componente `StatusPill` nuevo** (`App.jsx:31`): pill `Al día` (mint) / `Actualizando` (anim `pulse`) / `Error` (red) con dot + `status-pill busy/error`.
+- **Branding:** `import logo from "./assets/logo.png"` (`src/assets/logo.png` 45K + `public/favicon.png` 8.2K) + Google Fonts `Poppins 500-800` + `Inter 400-700` vía `index.html:7` (`lang="es"`), `brand-logo` circular 40px (login 76px) con `box-shadow`, `brand` flex header.
+- Estado: `token` (localStorage `ddns_token`), `inputToken`, `status`, `currentIp`, `logs[]` ahora objetos `{ts,msg,type}` con `type info/success/err`, `loading`, `error`, `intervalRef`.
+- `saveToken()/logout()/fetchStatus()/doUpdate()` igual flujo pero `addLog(msg,type)` + `type success/err` para colorear log; `doUpdate` usa `getPublicIp()`→ `POST /api/update-ip` y distingue `unchanged` vs `updated` con `addLog(...,"success")`, error → `addLog("Error: ...","err")` + `setError`.
+- `useEffect` al tener token: `fetchStatus` + `doUpdate` + `setInterval(POLL*60*1000)`, cleanup `clearInterval`.
+- UI login: `card login-card` con `brand-logo lg`, `subtitle`, `help`, input password, `Guardar y conectar` (full width), `small Backend: ...`.
+- UI dashboard: header `brand` + `Cerrar sesión` ghost, card con fila `Estado` → `StatusPill`, 5 filas Trabajador/Subdominio/Última IP servidor/IP actual/Última actualización, `actions` con botón spinner + hint, banner `error`, card `logs` dark (`--wm-black-2` bg) con `log-scroll` (max-height 210, overflow auto) y `log-line success/err` (mint #8cd2c9 / red #ff8fa3), footer con `sep` · .
+- CSS vars (`App.css:1`): `--wm-black #1c1c1e`, `--wm-red #ff2952`, `--wm-mint #8cd2c9`, etc., gradients radiales `radial-gradient(1200px ... rgba(255,41,82,0.10))`, dark mode `@media (prefers-color-scheme: dark)` con `--wm-bg #121214`.
 
 ### 3.5. Tauri config (app/src-tauri/tauri.conf.json)
 
@@ -251,3 +257,13 @@ CORS: `Allow-Origin *`, `Allow-Headers Content-Type, Authorization`, `Allow-Meth
 - Frontend: `NOIPPROPIO/app/src/App.jsx` `NOIPPROPIO/app/src-tauri/tauri.conf.json`
 - Infra: `root@xwmkt.com -p50050` `/root/hetzner/xwmkt/docker-compose.yaml` `/opt/ddns-backend/` `/root/xwmkt/npm-data/`
 - Dominios: `watermelonmarketing.com` (Zone `217aa0d441347046214b351bd874f167`), `ddns.xwmkt.com` (NPM 80/443→172.18.0.4:3000)
+
+## 10. Rediseño Claude 2026-08-27 21:16 — cambios aplicados
+
+Claude rediseñó solo frontend (`app/`), sin tocar `server/` ni `xwmkt`:
+
+- `app/index.html:1` `lang en→es`, `vite.svg→favicon.png`, título `Tauri + React→Watermelon DDNS`, añadidos `preconnect fonts.googleapis.com` + `Poppins 500-800` / `Inter 400-700`.
+- `app/src/App.jsx:1` `+ import logo`, nuevo `StatusPill` (Al día/Actualizando/Error con dot+ pulse), `addLog` tipado `success/err`, `brand` header con `brand-logo` + `brand-text`, `login-card` con `brand-logo lg`, logs como `{ts,msg,type}` con colores, spinner en botón, `sep` en footer.
+- `app/src/App.css:1` `+379 líneas` (de 41→379): vars `--wm-red #ff2952`, `--wm-mint #8cd2c9`, `radial-gradient` fondo, `card` 16px radius + `box-shadow 0 6px 24px`, `status-pill` pill, `input:focus` red, `button:hover` dark, `logs` dark `#222`/`#0c0c0e`, `log-line success/err`, dark mode `@media (prefers-color-scheme: dark)` con `--wm-bg #121214`.
+- `app/src/assets/logo.png` (45K) + `app/public/favicon.png` (8.2K) nuevos.
+- `codebase-memory index` intentado `index_repository /NOIPPROPIO full/moderate` → `CBM index worker could not start: a pre-coordination or unverified CBM generation is active` (daemon 0.10.8, pid 34243). Verificado vía `index_status` (ready pero generación 2026-08-24 sin NOIPPROPIO); reescaneo manual vía `Read` de `App.jsx:212`/`App.css:379`/`index.html:17` para actualizar docs sin depender del grafo.
