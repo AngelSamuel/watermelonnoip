@@ -2,7 +2,7 @@ use std::sync::Mutex;
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder, MenuItem},
     tray::{TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState},
-    Manager, Emitter,
+    Manager, Emitter, WindowEvent,
 };
 
 #[tauri::command]
@@ -30,6 +30,13 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![greet, update_tray])
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                // Cierra a tray en vez de salir: se queda en segundo plano actualizando cada 5 min
+                let _ = window.hide();
+                api.prevent_close();
+            }
+        })
         .setup(|app| {
             let handle = app.handle().clone();
 
