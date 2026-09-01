@@ -5,25 +5,31 @@ function genToken() {
   return crypto.randomBytes(32).toString("hex");
 }
 
+function genSuffix(length = 6) {
+  return crypto.randomBytes(length).toString("hex").slice(0, length);
+}
+
 function printUsage() {
   console.log(`
 Uso:
-  node cli.js add <nombre> <subdominio>      Crea un trabajador nuevo y genera su token
-  node cli.js list                            Lista todos los trabajadores
-  node cli.js remove <subdominio>              Elimina un trabajador
-  node cli.js token <subdominio>               Muestra el token de un trabajador existente
-  node cli.js rotate <subdominio>              Genera un token nuevo e invalida el anterior
+  node cli.js add <nombre> [subdominio]      Crea un trabajador (si se omite subdominio, añade sufijo aleatorio ej: samuel-a7f9x2)
+  node cli.js list                           Lista todos los trabajadores
+  node cli.js remove <subdominio>             Elimina un trabajador
+  node cli.js token <subdominio>              Muestra el token de un trabajador existente
+  node cli.js rotate <subdominio>             Genera un token nuevo e invalida el anterior
 `);
 }
 
 const [, , cmd, ...args] = process.argv;
 
 if (cmd === "add") {
-  const [name, subdomain] = args;
-  if (!name || !subdomain) {
-    console.error("Faltan argumentos. Uso: node cli.js add <nombre> <subdominio>");
+  const [name, customSubdomain] = args;
+  if (!name) {
+    console.error("Faltan argumentos. Uso: node cli.js add <nombre> [subdominio]");
     process.exit(1);
   }
+  const cleanName = name.toLowerCase().trim().replace(/[^a-z0-9]/g, "");
+  const subdomain = customSubdomain || `${cleanName}-${genSuffix(6)}`;
   const token = genToken();
   const now = new Date().toISOString();
   try {
