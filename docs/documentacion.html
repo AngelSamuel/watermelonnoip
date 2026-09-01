@@ -540,6 +540,10 @@ node cli.js remove samuel         # elimina el trabajador (revoca su acceso)</co
           <strong>Por qué esto era de riesgo bajo incluso antes</strong>
           La autenticación va por cabecera <code>Bearer</code>, no por cookie — un CORS abierto no permite a una web maliciosa "robar" la sesión de nadie, porque el navegador no adjunta el token automáticamente como sí haría con una cookie. Aun así, restringir el origen es una capa extra de higiene sin coste para el uso legítimo.
         </div>
+        <div class="callout">
+          <strong>Detalle honesto: <code>trust proxy</code> es más permisivo de lo ideal</strong>
+          <p style="margin:6px 0 0;">El rate limiting necesita <code>app.set("trust proxy", true)</code> para leer la IP real del trabajador detrás de Nginx Proxy Manager. El problema es que <code>true</code> confía en <em>toda</em> la cadena de <code>X-Forwarded-For</code> sin límite, lo que en teoría permitiría falsear esa cabecera para esquivar el límite de peticiones. Lo correcto sería <code>trust proxy: 1</code> (confiar solo en el salto inmediato, es decir NPM). El riesgo real hoy es bajo porque el puerto 3000 no está publicado al host (<code>expose</code>, no <code>ports</code> — ver <a href="#troubleshooting">Troubleshooting</a>), así que solo sería explotable desde dentro de la propia red Docker. Queda anotado como pendiente en el <a href="#roadmap">roadmap</a>.</p>
+        </div>
       </section>
 
       <section class="doc-section" id="frontend-stack">
@@ -609,6 +613,7 @@ const POLL_MINUTES = 5;</code></pre>
           <li><code>src/App.css</code> — reescrito por completo: tarjetas con más aire, barra degradada rojo→menta en el login, pastillas de estado en menta/rojo, botones con sombra de marca al hover, panel de log oscuro con líneas coloreadas por tipo, modo oscuro coherente con los mismos tokens.</li>
           <li><code>src/App.jsx</code> — se integró el logo en login y cabecera, se añadió <code>&lt;StatusPill&gt;</code>, y los logs se clasifican por tipo (<code>success</code> / <code>err</code> / neutro) para colorearlos.</li>
           <li><code>src/assets/logo.png</code> y <code>public/favicon.png</code> — copias de los iconos ya existentes en <code>src-tauri/icons/</code> (el logo en sí no se tocó).</li>
+          <li><em>(27 ago 2026)</em> Se quitó de la pantalla de login el <code>&lt;small&gt;Backend: ... · Poll cada ... min · Universal (Intel + Apple Silicon)&lt;/small&gt;</code> — era un detalle técnico de depuración sin utilidad para el trabajador que instala la app. Las constantes <code>API_BASE</code>/<code>POLL_MINUTES</code> se siguen usando internamente, solo desapareció el texto visible.</li>
         </ul>
 
         <div class="callout">
@@ -843,6 +848,18 @@ rm -rf /Library/Caches/com.apple.iconservices.store; killall Finder</code></pre>
           <p style="margin:6px 0 10px;"><strong>Cifrado del token por el sistema operativo</strong> (Llavero de macOS / Credential Manager de Windows): la vía natural es el crate de Rust <code>keyring</code>, pero su API cambió varias veces entre versiones y no logré verificar con fuentes fiables la firma exacta de sus funciones para la versión actual. Añadir a ciegas una dependencia nativa que compila distinto en macOS/Windows/Linux, sin poder probar el compilado aquí, se traduce en riesgo real de romper tu build o el CI en alguna plataforma por un detalle de API que no pude confirmar. Prefiero decírtelo claro a adivinar.</p>
           <p style="margin:0;"><strong>Firma de código de los instaladores</strong> (evita el aviso "Editor desconocido" de Windows SmartScreen y el bloqueo de Gatekeeper en macOS): esto no es algo que se resuelva con código — hace falta que tú obtengas un certificado de firma de Windows (de una CA) y una cuenta de Apple Developer Program (99 $/año) para notarización en macOS. Puedo dejar preparado el workflow de GitHub Actions para firmar automáticamente en cuanto tengas esos certificados, pero añadir esa configuración ahora, sin certificados reales para probarla, es exactamente el mismo tipo de cambio a ciegas que quiero evitarte en tu CI ya funcional.</p>
         </div>
+
+        <div class="callout mint">
+          <strong>Nota de seguridad, 27 ago 2026: 8/10</strong>
+          <p style="margin:6px 0 10px;">Sube desde un 7/10 anterior tras cerrar rate limiting, allowlist de CORS, Docker sin root, rotación de tokens y audit en CI. Verificado leyendo el código real desplegado, no solo lo documentado. Lo que mantiene la nota por debajo de 9-10:</p>
+          <ul style="margin:0 0 10px;">
+            <li><code>trust proxy: true</code> más permisivo de lo ideal (debería ser <code>trust proxy: 1</code>) — ver <a href="#backend-hardening">Endurecimiento del backend</a>.</li>
+            <li>La rotación de tokens es manual — no hay expiración automática (TTL); un token filtrado sigue siendo válido hasta que alguien lo rote a mano.</li>
+            <li><code>docker-compose.yaml</code> de producción no está versionado en el repositorio (solo vive en el servidor) — sin copia de seguridad en git.</li>
+            <li>Los dos residuales ya conocidos y aceptados: sin cifrado a nivel de sistema operativo del token, y sin firma de código — ambos explicados arriba.</li>
+          </ul>
+          <p style="margin:0;">Sólido para uso interno de una empresa pequeña; estas son las cosas concretas que faltarían para un "resuelto del todo".</p>
+        </div>
       </section>
 
       <section class="doc-section" id="troubleshooting">
@@ -859,6 +876,7 @@ rm -rf /Library/Caches/com.apple.iconservices.store; killall Finder</code></pre>
               <tr><td><code>failed to run cargo metadata</code></td><td><code>cargo</code> no está en el <code>PATH</code></td><td><code>source "$HOME/.cargo/env"</code></td></tr>
               <tr><td><code>You have not agreed to Xcode license</code></td><td>Xcode sin licencia aceptada</td><td><code>sudo xcodebuild -license accept</code></td></tr>
               <tr><td>El icono del <code>.dmg</code> no cambia</td><td>Solo se reemplazó <code>icon.png</code></td><td><code>npx @tauri-apps/cli icon &lt;png 1024&gt;</code>, rebuild, limpiar caché de iconos del Finder</td></tr>
+              <tr><td><code>curl http://localhost:3000/health</code> falla en el host xwmkt aunque <code>docker logs</code> diga que está escuchando</td><td><code>docker-compose.yaml</code> usa <code>expose: ["3000"]</code>, no <code>ports:</code> — el puerto no está publicado al host, solo visible entre contenedores</td><td>No es un fallo real: verificar con <code>curl -i https://ddns.xwmkt.com/health</code> (la ruta pública) o <code>docker exec xwmkt_ddns-backend_1 wget -qO- http://localhost:3000/health</code> (desde dentro del contenedor)</td></tr>
             </tbody>
           </table>
         </div>
@@ -873,8 +891,10 @@ rm -rf /Library/Caches/com.apple.iconservices.store; killall Finder</code></pre>
           <li>Soporte IPv6 (<code>AAAA</code>) además de <code>A</code>.</li>
           <li><del>Rate limit</del> — hecho, ver <a href="#backend-hardening">Endurecimiento del backend</a>. Queda pendiente un histórico de IPs por trabajador para auditoría (más allá de <code>last_ip</code>/<code>updated_at</code>).</li>
           <li><del>GitHub Actions para builds multiplataforma</del> — hecho, ver <a href="#deploy-ci">Build multiplataforma automático</a>. Queda pendiente publicar releases automáticos (adjuntar los instaladores a un GitHub Release en vez de solo subirlos como artefacto de la Action).</li>
+          <li><del>Migración de esquema: columna <code>created_at</code></del> — hecho, con migración segura vía <code>PRAGMA table_info</code>. Queda pendiente <code>failed_attempts</code> si se quiere auditoría de intentos fallidos.</li>
+          <li>Ajustar <code>trust proxy</code> de <code>true</code> a <code>1</code> en el backend, y expiración automática (TTL) de tokens en vez de solo rotación manual — ver <a href="#seguridad">Seguridad</a>.</li>
+          <li>Versionar <code>docker-compose.yaml</code> de producción en el repositorio (hoy solo vive en el servidor, sin copia de seguridad en git).</li>
           <li><code>/health</code> con <code>last_ip</code> agregado, para monitorizar con Uptime Kuma (ya corriendo en <code>xwmkt</code>).</li>
-          <li>Migración de esquema si la tabla crece: añadir <code>created_at</code>, <code>failed_attempts</code>.</li>
         </ul>
       </section>
 

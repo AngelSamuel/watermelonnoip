@@ -19,7 +19,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https://api.ipify.org https://icanhazip.com https://ifconfig.me https://ddns.xwmkt.com"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https://api.ipify.org https://icanhazip.com https://ifconfig.me https://ddns.xwmkt.com:8113 https://ddns.xwmkt.com"
     }
   },
   "bundle": {

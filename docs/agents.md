@@ -12,7 +12,7 @@
 App multiplataforma **Tauri v2 (React)** que replica NO-IP DUC pero contra **Cloudflare DNS API** sobre dominio propio `watermelonmarketing.com`. Cada trabajador tiene **subdominio dedicado** (`samuel.watermelonmarketing.com`, `fernando...`) que apunta dinámicamente a su IP pública.
 
 - **Plataformas:** Desktop Win/Mac/Linux (Tauri). Binario **universal macOS** (`universal-apple-darwin` = Intel x86_64 + Apple Silicon arm64) para superar el aviso de No-IP. Instaladores: `.dmg/.app` (macOS), `.msi/.exe` (Windows vía `cargo` en Windows o GitHub Actions), `.AppImage/.deb` (Linux).
-- **Login:** pantalla única con **token por trabajador** (Bearer). Token generado por admin en servidor, pegado una vez en la app, guardado en `localStorage` del WebView (persistente por equipo). Sin cuenta/contraseña Cloudflare en el cliente.
+- **Login:** pantalla única con **token por trabajador** (Bearer). Token generado por admin en servidor, pegado una vez en la app, guardado vía `tauri-plugin-store` (fichero fuera del `localStorage` del WebView, con migración automática del valor legado; no es cifrado a nivel de SO — ver §11). Sin cuenta/contraseña Cloudflare en el cliente.
 - **Detección IP:** polling cada **5 min** contra `https://api.ipify.org?format=json` (fallback `icanhazip.com`, `ifconfig.me/ip`) con `cache: no-store`. Solo hace `PUT` a Cloudflare si la IP cambió (TTL 120).
 - **Backend intermedio:** obligatorio por seguridad. El **API Token de Cloudflare (Zone.DNS Edit)** nunca sale de `xwmkt`; los clientes solo tienen un token opaco por subdominio. Si filtran el instalador/token de un trabajador, solo puede tocar su propio registro.
 
@@ -33,9 +33,9 @@ App multiplataforma **Tauri v2 (React)** que replica NO-IP DUC pero contra **Clo
 ```
 
 - **Backend host:** `xwmkt` (IP `49.13.140.132`), `root@xwmkt.com -p50050`, auth `~/.ssh/id_ed25519` y `~/.ssh/id_noipwatermelon` para GitHub.
-- **Stack backend:** Node 20 Alpine, Express 4, `better-sqlite3` 11, `fetch` nativo (Node 18+), CORS abierto (`Access-Control-Allow-Origin: *`).
+- **Stack backend:** Node 20 Alpine (build multi-stage, corre como `USER node`), Express 4, `better-sqlite3` 11, `fetch` nativo (Node 18+), `express-rate-limit` (30 req/min en `/api/*`), CORS restringido a allowlist de orígenes reales de Tauri (`tauri://localhost`, `http://tauri.localhost`, `https://tauri.localhost`) — ver §11.
 - **DB:** SQLite en `/opt/ddns-backend/data/ddns.db` (montado como volumen `/app/data`).
-- **Dominio backend:** `ddns.xwmkt.com` → NPM (`jc21/nginx-proxy-manager:latest`) → `xwmkt_ddns-backend_1:3000` (expose 3000, no ports). Cert Let's Encrypt vía DNS-01 o proxy Cloudflare (finalmente instalado; `curl -i https://ddns.xwmkt.com/health → 200 {"status":"ok"}`).
+- **Dominio backend:** `ddns.xwmkt.com:8113` → NPM (`jc21/nginx-proxy-manager:latest`, publicado en puerto 8113 con SSL) → `xwmkt_ddns-backend_1:3000`. Exposición en puerto 8113 abierto a `0.0.0.0/0` en Hetzner Firewall para permitir auto-actualización desde cualquier IP dinámica sin depender de whitelist estática de Hetzner. `curl -i https://ddns.xwmkt.com:8113/health → 200 {"status":"ok"}`.
 
 ## 3. Estructura de ficheros
 
@@ -88,7 +88,7 @@ CREATE TABLE workers (
 - `GET /api/status`  `Authorization: Bearer <token>` → `{"success":true, worker_name, subdomain:"samuel.watermelonmarketing.com", last_ip, updated_at}` / `401 {error:"Token inválido"}`.
 - `POST /api/update-ip`  `Authorization: Bearer <token>`  `body {ip}` → valida token, resuelve/crea registro A si no existe (`getOrCreateRecord`), compara `last_ip`, si cambió hace `PUT` `updateRecord`, actualiza DB. Respuestas: `200 {success:true, status:"updated"|"unchanged", subdomain, ip, updated_at}` / `401` / `500 {error:"Authentication error"|...}` (error de CF propagado).
 
-CORS: `Allow-Origin *`, `Allow-Headers Content-Type, Authorization`, `Allow-Methods GET,POST,OPTIONS` (para Tauri WebView).
+CORS: `Allow-Origin` solo si el `Origin` de la petición está en la allowlist de Tauri (o `*` cuando no hay cabecera `Origin`, ej. curl/healthchecks), `Allow-Headers Content-Type, Authorization`, `Allow-Methods GET,POST,OPTIONS`. Rate limit `express-rate-limit` 30 req/min en `/api/*` (`trust proxy: true` para leer bien la IP real detrás de NPM — ver hallazgo en §11).
 
 ### 3.3. Cloudflare (server/src/cloudflare.js)
 
@@ -105,13 +105,13 @@ CORS: `Allow-Origin *`, `Allow-Headers Content-Type, Authorization`, `Allow-Meth
 - Estado: `token` (localStorage `ddns_token`), `inputToken`, `status`, `currentIp`, `logs[]` ahora objetos `{ts,msg,type}` con `type info/success/err`, `loading`, `error`, `intervalRef`.
 - `saveToken()/logout()/fetchStatus()/doUpdate()` igual flujo pero `addLog(msg,type)` + `type success/err` para colorear log; `doUpdate` usa `getPublicIp()`→ `POST /api/update-ip` y distingue `unchanged` vs `updated` con `addLog(...,"success")`, error → `addLog("Error: ...","err")` + `setError`.
 - `useEffect` al tener token: `fetchStatus` + `doUpdate` + `setInterval(POLL*60*1000)`, cleanup `clearInterval`.
-- UI login: `card login-card` con `brand-logo lg`, `subtitle`, `help`, input password, `Guardar y conectar` (full width), `small Backend: ...`.
+- UI login: `card login-card` con `brand-logo lg`, `subtitle`, `help`, input password, `Guardar y conectar` (full width). *(2026-08-27: se quitó el `<small>` con `Backend/Poll/Universal` — info de debug sin valor para el trabajador, ver §11.)*
 - UI dashboard: header `brand` + `Cerrar sesión` ghost, card con fila `Estado` → `StatusPill`, 5 filas Trabajador/Subdominio/Última IP servidor/IP actual/Última actualización, `actions` con botón spinner + hint, banner `error`, card `logs` dark (`--wm-black-2` bg) con `log-scroll` (max-height 210, overflow auto) y `log-line success/err` (mint #8cd2c9 / red #ff8fa3), footer con `sep` · .
 - CSS vars (`App.css:1`): `--wm-black #1c1c1e`, `--wm-red #ff2952`, `--wm-mint #8cd2c9`, etc., gradients radiales `radial-gradient(1200px ... rgba(255,41,82,0.10))`, dark mode `@media (prefers-color-scheme: dark)` con `--wm-bg #121214`.
 
 ### 3.5. Tauri config (app/src-tauri/tauri.conf.json)
 
-`productName Watermelon DDNS`, `identifier com.watermelon.ddns`, `version 1.0.0`, `windows [{title Watermelon DDNS, width 560, height 680, resizable false}]`, `security.csp null`, `bundle targets all`, icones `icons/32x32.png...icon.icns/icon.ico`.
+`productName Watermelon DDNS`, `identifier com.watermelon.ddns`, `version 1.0.0`, `windows [{title Watermelon DDNS, width 560, height 680, resizable false}]`, `security.csp` activa (ver §11, ya no `null`), `bundle targets all`, icones `icons/32x32.png...icon.icns/icon.ico`. `bundle.windows.iconPath` eliminado (no es propiedad válida en Tauri v2 — rompía el build).
 
 ### 3.6. Tray / Menu Bar (macOS) — “lo que hay ahora + icono arriba” 2026-08-27
 
@@ -233,10 +233,22 @@ Ventana principal se mantiene intacta (`560×680`), se añade **icono en la barr
 ## 6. Seguridad
 
 - **Regla global credenciales**: nunca pegar passphrase/API key/token en chat en plano. Generar en panel web, guardar con `read -rsp ...; chmod 600` en servidor, verificar con `wc -c` no `cat`. Lección 2026-08-22 (grep DB_PASSWORD expuso secret) aplicada.
-- Token por trabajador: si equipo comprometido, solo afecta su subdominio; revocar con `remove` + `add` nuevo token.
-- Cloudflare token scoped a `watermelonmarketing.com` Zone.DNS Edit únicamente.
-- CORS `*` es aceptable para Tauri (origen `tauri://localhost`), en producción podría restringirse a `tauri://localhost` + `https://ddns.xwmkt.com`.
-- Transporte: `https://ddns.xwmkt.com` con Let's Encrypt; tokens nunca en claro (el fallback `http://ddns...` solo para debug, no usar en prod).
+- Token por trabajador: 64 hex (32 bytes random, `crypto.randomBytes`); si equipo comprometido solo afecta su subdominio. Revocar con `node cli.js rotate <subdominio>` (invalida el token viejo al instante; ya no hace falta `remove`+`add`, que perdía el histórico del trabajador).
+- Cloudflare token scoped a `watermelonmarketing.com` Zone.DNS Edit únicamente, nunca sale del backend (solo en `/opt/ddns-backend/.env`, fuera de git).
+- CORS: allowlist real de orígenes Tauri (ya no `*` incondicional), rate limit 30 req/min en `/api/*`.
+- Transporte: `https://ddns.xwmkt.com` con Let's Encrypt; tokens nunca en claro.
+- Token en la app cliente: `tauri-plugin-store` (fuera del `localStorage` del WebView), **no es cifrado por el SO** (no Keychain/Credential Manager) — riesgo residual aceptado conscientemente, ver nota de abajo.
+- Docker backend: build multi-stage, imagen final corre como `USER node` (no root).
+- CI: job `audit` no bloqueante (`npm audit` app+server, `cargo audit` src-tauri) en cada push/PR.
+
+### Nota de seguridad 2026-08-27: 8/10
+
+Subida desde 7/10 tras cerrar 5 de los 7 gaps detectados en la auditoría anterior (rate limiting, CORS allowlist, Docker no-root, rotación de tokens, audit en CI). Hallazgos que mantienen la nota por debajo de 9-10, verificados leyendo el código real desplegado, no solo lo documentado:
+
+- `app.set("trust proxy", true)` en `index.js` es más permisivo de lo ideal — debería ser `trust proxy: 1` (confiar solo en el salto de NPM) en vez de `true` (confía en toda la cadena `X-Forwarded-For` sin límite, lo que en teoría permite falsear la IP para esquivar el rate limit). Riesgo bajo en la práctica porque el puerto 3000 no está publicado al host (`expose`, no `ports`), solo alcanzable desde otros contenedores de la red Docker.
+- `rotate` es manual, no hay expiración automática (TTL) de tokens — uno filtrado sigue siendo válido hasta que alguien lo note y lo rote a mano.
+- `docker-compose.yaml` de producción no está versionado en el repo (vive solo en `/root/hetzner/xwmkt/`) — sin backup en git si se pierde el host.
+- Residuales ya conocidos y aceptados conscientemente: sin cifrado a nivel de SO del token en el cliente (requeriría verificar a fondo una librería tipo `keyring` cross-platform; no implementado por no poder validar su API con garantías suficientes sin poder testearla en las tres plataformas), sin firma de código (Windows Authenticode / Apple notarization, requiere certificados de pago de Watermelon Marketing).
 
 ## 7. Troubleshooting
 
@@ -244,6 +256,7 @@ Ventana principal se mantiene intacta (`560×680`), se añade **icono en la barr
 |---------|-------|----------|
 | `Load failed` / `Status error: Load failed` | DNS `NXDOMAIN` o NPM sin Proxy Host | `dig ddns.xwmkt.com`, crear `A ddns → 49.13.140.132` y Proxy Host `ddns → xwmkt_ddns-backend_1:3000`; `curl -i https://ddns.xwmkt.com/health` debe dar 200 |
 | `tlsv1 unrecognized name` | Sin cert en NPM | Ver `docker logs xwmkt_npm_1` + `letsencrypt.log`; usar DNS-01 Cloudflare o activar proxy CF |
+| `curl http://localhost:3000/health` → `Failed to connect` en el host xwmkt, aunque `docker logs` diga que está escuchando | El compose usa `expose: ["3000"]`, no `ports:` — el puerto NO está publicado al host, solo visible entre contenedores de la red Docker | No es un fallo: verificar por la ruta real `curl -i https://ddns.xwmkt.com/health`, o desde dentro del contenedor `docker exec xwmkt_ddns-backend_1 wget -qO- http://localhost:3000/health` |
 | `curl http` ok desde casa pero `Connection timed out` desde Hetzner/cronos | Filtrado puerto 80 perimetral | Cambiar a DNS-01, no depender de http-01 |
 | `Authentication error` tras login (status ok, update falla) | `CF_API_TOKEN` placeholder/inválido | Revisar `/opt/ddns-backend/.env` (sin cat en chat), `docker exec ... node -e "fetch(.../zones/$ZONE_ID)..."`, `up -d` |
 | Dashboard `Desconocida / -` | Nunca se hizo update o `last_ip` null | `POST /api/update-ip` con IP válida crea registro y rellena DB |
@@ -254,12 +267,17 @@ Ventana principal se mantiene intacta (`560×680`), se añade **icono en la barr
 ## 8. Roadmap / pendientes
 
 - [x] **System tray macOS** (barra superior) — implementado 2026-08-27 `lib.rs:tray-icon` + `App.jsx:invoke update_tray` — clic izq toggle ventana, clic dcho menú con resumen IP + Actualizar/Abrir/Salir, misma línea textual que el dashboard.
-- [ ] Autostart (Tauri plugin `autostart`) + `store` para cifrado at-rest del token vs localStorage.
+- [x] `store` para sacar el token del `localStorage` del WebView (`tauri-plugin-store`, con migración automática) — 2026-08-27. Sigue sin ser cifrado a nivel de SO (ver §6).
+- [x] Rate limit en `/api/*` (`express-rate-limit`, 30 req/min) — 2026-08-27. Pendiente: `trust proxy: 1` en vez de `true`, y limitar por token además de por IP.
+- [x] GitHub Actions: matriz de build multiplataforma (ya existía) + job `audit` no bloqueante (`npm audit` + `cargo audit`) — 2026-08-27.
+- [x] Migración DB: `created_at` añadido con migración segura (`PRAGMA table_info` + `ALTER TABLE` guardado) — 2026-08-27.
+- [x] Rotación de tokens: `node cli.js rotate <subdominio>` — 2026-08-27. Pendiente: expiración automática (TTL), no solo rotación manual.
+- [ ] Autostart (Tauri plugin `autostart`).
+- [ ] Cifrado del token a nivel de SO (Keychain/Credential Manager) vía crate `keyring` — no implementado: no se pudo verificar su API con garantías suficientes para un build cross-platform sin poder testearla.
+- [ ] Firma de código (Windows Authenticode / Apple notarization) — requiere certificados de pago de Watermelon Marketing, fuera de mi alcance sin ellos.
 - [ ] Soporte IPv6 (`AAAA`) además de `A`.
-- [ ] Rate limit por token + logs de IP histórica (auditoría).
-- [ ] GitHub Actions para builds multiplataforma (macOS universal, Windows msi/nsis, Linux AppImage/deb) y releases.
+- [ ] Versionar `docker-compose.yaml` de producción en el repo (hoy solo vive en `/root/hetzner/xwmkt/`, sin backup en git).
 - [ ] Health endpoint con `last_ip` agregado para monitorización Uptime Kuma (`uptime-kuma` ya en xwmkt).
-- [ ] Migración DB si crece: añadir `created_at`, `failed_attempts`.
 
 ## 9. Referencias
 
@@ -278,3 +296,30 @@ Claude rediseñó solo frontend (`app/`), sin tocar `server/` ni `xwmkt`:
 - `app/src/App.css:1` `+379 líneas` (de 41→379): vars `--wm-red #ff2952`, `--wm-mint #8cd2c9`, `radial-gradient` fondo, `card` 16px radius + `box-shadow 0 6px 24px`, `status-pill` pill, `input:focus` red, `button:hover` dark, `logs` dark `#222`/`#0c0c0e`, `log-line success/err`, dark mode `@media (prefers-color-scheme: dark)` con `--wm-bg #121214`.
 - `app/src/assets/logo.png` (45K) + `app/public/favicon.png` (8.2K) nuevos.
 - `codebase-memory index` intentado `index_repository /NOIPPROPIO full/moderate` → `CBM index worker could not start: a pre-coordination or unverified CBM generation is active` (daemon 0.10.8, pid 34243). Verificado vía `index_status` (ready pero generación 2026-08-24 sin NOIPPROPIO); reescaneo manual vía `Read` de `App.jsx:212`/`App.css:379`/`index.html:17` para actualizar docs sin depender del grafo.
+
+
+## 11. Hardening de seguridad 2026-08-27 (fase 2) — cambios aplicados
+
+Segunda ronda de cambios de Claude, esta vez tocando `server/` además de `app/`, tras una auditoría de seguridad honesta pedida explícitamente por el admin.
+
+### Frontend (`app/`)
+
+- **Token fuera de `localStorage`:** `App.jsx` ahora usa `@tauri-apps/plugin-store` (`secure-store.json`) para guardar/leer/borrar el token, con migración automática de cualquier valor legado en `localStorage` al primer arranque, y fallback a `localStorage` si el store lanza excepción. Comentario explícito en el código dejando claro que **no** es un almacén cifrado por el SO, solo deja de estar en el storage del navegador. Requiere `tauri-plugin-store = "2"` en `Cargo.toml`, `.plugin(tauri_plugin_store::Builder::new().build())` en `lib.rs`, `"store:default"` en `capabilities/default.json`, y `"@tauri-apps/plugin-store": "^2"` en `package.json`.
+- **CSP activa** en `tauri.conf.json` (`app.security.csp`, antes `null`): `default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https://api.ipify.org https://icanhazip.com https://ifconfig.me https://ddns.xwmkt.com` — el `connect-src` incluye `ipc:`/`http://ipc.localhost` (necesario para que `invoke()`/`listen()` de Tauri v2 sigan funcionando) y los hosts reales de detección de IP + backend.
+- **Fix de build:** `bundle.windows.iconPath` no es una propiedad válida en el schema de Tauri v2 (los iconos solo salen de `bundle.icon` en la raíz) — se quitó de `tauri.conf.json`, rompía `npm run tauri build` con `Additional properties are not allowed`.
+- **Limpieza UI (2026-08-27, a petición del admin):** se quitó el `<small>Backend: {API_BASE} · Poll cada {POLL_MINUTES} min · Universal (Intel + Apple Silicon)</small>` de la pantalla de login — era información técnica de debug sin valor para el trabajador final. `API_BASE`/`POLL_MINUTES` se siguen usando internamente, solo se quitó el texto visible.
+
+### Backend (`server/`)
+
+- **Rate limiting:** `express-rate-limit` en `/api/*`, `windowMs: 60_000, limit: 30` — suficiente para el uso legítimo (poll cada 5 min + "Actualizar ahora" manual) y corta martilleo del endpoint. Requiere `app.set("trust proxy", true)` para leer bien la IP real detrás de NPM (ver hallazgo de seguridad en §6: sería más correcto `trust proxy: 1`).
+- **CORS con allowlist real:** ya no `Access-Control-Allow-Origin: *` sin condición — ahora solo si `req.headers.origin` está en `{tauri://localhost, http://tauri.localhost, https://tauri.localhost}` (Windows usa un origen distinto a macOS/Linux, verificado contra la documentación oficial de Tauri antes de tocarlo). Sin cabecera `Origin` (curl, healthchecks) se permite `*` porque no es una petición CORS real.
+- **Docker multi-stage, sin root:** `Dockerfile` reescrito en dos etapas — `builder` (con `python3 make g++` para compilar `better-sqlite3`) y una imagen final limpia que copia el resultado, hace `chown -R node:node /app` y corre como `USER node`. Requirió `chown -R 1000:1000 /opt/ddns-backend/data` una vez en el host antes del primer redeploy con esta imagen (ya hecho).
+- **Rotación de tokens:** `node cli.js rotate <subdominio>` genera un token nuevo (32 bytes random) e invalida el anterior al instante — antes solo existía `remove`+`add`, que perdía el histórico del trabajador.
+- **`created_at` en la tabla `workers`:** migración segura vía `PRAGMA table_info` + `ALTER TABLE` guardado (no rompe si la columna ya existe), `cli.js add`/`list` actualizados para usarla.
+- **CI:** nuevo job `audit` en `.github/workflows/build.yml` (no bloqueante): `npm audit --audit-level=high` en `app/` y `server/`, `cargo audit` en `app/src-tauri`. Informativo, no impide merges — un CVE no bloquea el pipeline, solo queda visible en el log de Actions.
+
+### Lección de despliegue: `expose` vs `ports`, y cómo verificar salud real
+
+Tras un redeploy correcto (build de 13 pasos con las dos etapas, `chown`, `USER node`, `npm install` sin vulnerabilidades), `curl http://localhost:3000/health` ejecutado directamente en el host xwmkt seguía dando `Failed to connect`, a pesar de que `docker logs` mostraba `DDNS Backend escuchando en puerto 3000`. Causa: `docker-compose.yaml` declara `expose: ["3000"]`, no `ports: ["3000:3000"]` — el puerto solo es alcanzable **entre contenedores de la misma red Docker** (como el de Nginx Proxy Manager, que es quien realmente enruta `ddns.xwmkt.com`), nunca desde `localhost` en la shell del host. No es un bug, es la arquitectura documentada en §2/§4.2. Para verificar salud real: `curl -i https://ddns.xwmkt.com/health` (la ruta pública real) o `docker exec xwmkt_ddns-backend_1 wget -qO- http://localhost:3000/health` (desde dentro del namespace de red del propio contenedor).
+
+Ver §6 para la nota de seguridad completa (8/10) con los hallazgos concretos que quedan pendientes.

@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { load } from "@tauri-apps/plugin-store";
 
-const API_BASE = "https://ddns.xwmkt.com";
+const API_BASE = "https://ddns.xwmkt.com:8113";
 const IP_SERVICES = [
   "https://api.ipify.org?format=json",
   "https://icanhazip.com",
@@ -229,7 +229,6 @@ function App() {
           />
           {error && <div className="error">{error}</div>}
           <button onClick={saveToken}>Guardar y conectar</button>
-          <small>Backend: {API_BASE} · Poll cada {POLL_MINUTES} min · Universal (Intel + Apple Silicon)</small>
         </div>
       </main>
     );
