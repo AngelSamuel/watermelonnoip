@@ -17,6 +17,7 @@ Uso:
   node cli.js remove <subdominio>             Elimina un trabajador
   node cli.js token <subdominio>              Muestra el token de un trabajador existente
   node cli.js rotate <subdominio>             Genera un token nuevo e invalida el anterior
+  node cli.js rename <subdominio> [nuevo]     Cambia el subdominio de un trabajador (si se omite nuevo, le pone sufijo aleatorio)
 `);
 }
 
@@ -84,6 +85,24 @@ if (cmd === "add") {
   console.log(`Token rotado para ${subdomain}.`);
   console.log(`  Token nuevo: ${newToken}`);
   console.log(`\nEl token anterior deja de funcionar inmediatamente. Entrega el nuevo al trabajador — tendrá que pegarlo de nuevo en la app.`);
+} else if (cmd === "rename") {
+  const [oldSubdomain, newSubdomainInput] = args;
+  if (!oldSubdomain) {
+    console.error("Uso: node cli.js rename <subdominio_actual> [nuevo_subdominio]");
+    process.exit(1);
+  }
+  const worker = db.prepare("SELECT id, name FROM workers WHERE subdomain = ?").get(oldSubdomain);
+  if (!worker) {
+    console.error("No se encontró ese subdominio.");
+    process.exit(1);
+  }
+  const cleanName = worker.name.toLowerCase().trim().replace(/[^a-z0-9]/g, "");
+  const newSubdomain = newSubdomainInput || `${cleanName}-${genSuffix(6)}`;
+  db.prepare("UPDATE workers SET subdomain = ? WHERE id = ?").run(newSubdomain, worker.id);
+  console.log(`Subdominio actualizado para ${worker.name}:`);
+  console.log(`  Antes: ${oldSubdomain}.watermelonmarketing.com`);
+  console.log(`  Ahora: ${newSubdomain}.watermelonmarketing.com`);
+  console.log(`\nLa app del trabajador se actualizará automáticamente en la siguiente comprobación sin necesidad de tocar su PC.`);
 } else {
   printUsage();
 }
