@@ -98,7 +98,7 @@ if (cmd === "add") {
   }
   const cleanName = worker.name.toLowerCase().trim().replace(/[^a-z0-9]/g, "");
   const newSubdomain = newSubdomainInput || `${cleanName}-${genSuffix(6)}`;
-  db.prepare("UPDATE workers SET subdomain = ? WHERE id = ?").run(newSubdomain, worker.id);
+  db.prepare("UPDATE workers SET subdomain = ?, cf_record_id = NULL, last_ip = NULL WHERE id = ?").run(newSubdomain, worker.id);
   console.log(`Subdominio actualizado para ${worker.name}:`);
   console.log(`  Antes: ${oldSubdomain}.watermelonmarketing.com`);
   console.log(`  Ahora: ${newSubdomain}.watermelonmarketing.com`);
