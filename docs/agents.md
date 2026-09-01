@@ -21,7 +21,7 @@ App multiplataforma **Tauri v2 (React)** que replica NO-IP DUC pero contra **Clo
 ```
 [App Tauri en PC trabajador]  --(1) GET api.ipify.org--> IP pública
            |
-           | (2) POST https://ddns.xwmkt.com/api/update-ip  Bearer: <token_trabajador>
+           | (2) POST https://ddns.xwmkt.com:8113/api/update-ip  Bearer: <token_trabajador>
            |     body: { ip: "92.59.209.120" }
            v
 [Backend xwmkt: ddns-backend:3000]  -- valida token → resuelve subdomain + cf_record_id (SQLite)
@@ -186,7 +186,7 @@ Ventana principal se mantiene intacta (`560×680`), se añade **icono en la barr
    docker exec xwmkt_ddns-backend_1 node cli.js token samuel
    docker exec xwmkt_ddns-backend_1 node cli.js remove <subdominio>
    ```
-   2026-08-27 verificado: `Samuel/samuell` creado, `curl POST https://ddns.xwmkt.com/api/update-ip -H "Authorization: Bearer <token>" -d '{"ip":"92.59.209.120"}' → {"success":true,"status":"updated"...}` y `CF record bead72670... content 92.59.209.120 ttl 120`.
+   2026-08-27 verificado: `Samuel/samuell` creado, `curl POST https://ddns.xwmkt.com:8113/api/update-ip -H "Authorization: Bearer <token>" -d '{"ip":"92.59.209.120"}' → {"success":true,"status":"updated"...}` y `CF record bead72670... content 92.59.209.120 ttl 120`.
 
 6. Actualización código: `scp` nuevo `src/index.js` (CORS añadido) + `docker-compose up -d` para recargar.
 
@@ -323,3 +323,16 @@ Segunda ronda de cambios de Claude, esta vez tocando `server/` además de `app/`
 Tras un redeploy correcto (build de 13 pasos con las dos etapas, `chown`, `USER node`, `npm install` sin vulnerabilidades), `curl http://localhost:3000/health` ejecutado directamente en el host xwmkt seguía dando `Failed to connect`, a pesar de que `docker logs` mostraba `DDNS Backend escuchando en puerto 3000`. Causa: `docker-compose.yaml` declara `expose: ["3000"]`, no `ports: ["3000:3000"]` — el puerto solo es alcanzable **entre contenedores de la misma red Docker** (como el de Nginx Proxy Manager, que es quien realmente enruta `ddns.xwmkt.com`), nunca desde `localhost` en la shell del host. No es un bug, es la arquitectura documentada en §2/§4.2. Para verificar salud real: `curl -i https://ddns.xwmkt.com/health` (la ruta pública real) o `docker exec xwmkt_ddns-backend_1 wget -qO- http://localhost:3000/health` (desde dentro del namespace de red del propio contenedor).
 
 Ver §6 para la nota de seguridad completa (8/10) con los hallazgos concretos que quedan pendientes.
+
+### Archviz de Cambios 2026-09-01 (Solución Firewall y Random Suffix)
+1. **Firewall Hetzner bypass (Puerto Dedicado 8113)**: 
+   - Problema original: El firewall de Hetzner requería IP estática para port 443, lo que bloqueaba a los trabajadores con IPs dinámicas (el propósito mismo de un DDNS).
+   - Solución: Se expuso el puerto `8113` directamente a `0.0.0.0/0` en Hetzner. 
+   - NPM fue configurado con `listen 8113 ssl;` en la pestaña `Advanced` para `ddns.xwmkt.com`, mapeando internamente al contenedor 3000 de Node.
+   - En `App.jsx`, `API_BASE` y `tauri.conf.json` CSP se apuntaron a `https://ddns.xwmkt.com:8113`. 
+2. **Subdominios Aleatorios Seguros**:
+   - Para evitar *DNS Enumeration*, `cli.js` genera sufijos aleatorios en la creación si no se aporta un alias fijo (`nombre-a7f9x2`). 
+   - Nuevo flag `cli.js rename <old> [new]` resetea la IP y el ID de Cloudflare guardados y actualiza el subdominio de un trabajador. La App reengancha gracias al `update-ip` forzoso de la DB e impacta en Cloudflare.
+3. **Repositorio y GitHub Actions local**:
+   - Workflow `.github/workflows/build.yml` eliminado.
+   - Build se hace en cada máquina destino directamente `cd app && npm run tauri build` generando instaladores `.msi` (en Win) y `.dmg` (en macOS).
