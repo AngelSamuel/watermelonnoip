@@ -362,7 +362,12 @@
           <li><strong>Host del backend:</strong> <code>xwmkt</code> (IP <code>49.13.140.132</code>), acceso <code>root@xwmkt.com -p50050</code>.</li>
           <li><strong>Stack backend:</strong> Node 20 Alpine, Express 4, <code>better-sqlite3</code> 11, <code>fetch</code> nativo de Node 18+, CORS abierto.</li>
           <li><strong>Base de datos:</strong> SQLite en <code>/opt/ddns-backend/data/ddns.db</code>, montada como volumen <code>/app/data</code> en el contenedor.</li>
-          <li><strong>Dominio del backend:</strong> <code>ddns.xwmkt.com</code> → Nginx Proxy Manager (<code>jc21/nginx-proxy-manager</code>) → contenedor <code>xwmkt_ddns-backend_1:3000</code>. Certificado Let's Encrypt (DNS-01 / proxy Cloudflare).</li>
+          <li><strong>Dominio del backend:</strong> <code>ddns.xwmkt.com:8113</code> → Nginx Proxy Manager (<code>jc21/nginx-proxy-manager</code>).<br>
+          <div style="margin: 10px 0 10px 20px; padding-left: 10px; border-left: 3px solid #ff2952;">
+            <strong>Arquitectura de red (Bypass de Hetzner Firewall):</strong><br>
+            Para que usuarios dinámicos puedan conectarse, se abre el puerto <code>8113</code> en el firewall de Hetzner a <code>0.0.0.0/0</code> (mientras que los puertos habituales web se blindan para Passbolt).<br>
+            En Docker Compose, el contenedor de NPM expone el puerto 8113 (<code>- 8113:8113</code>). Dentro de NPM, el proxy host de <code>ddns.xwmkt.com</code> tiene en su pestaña <em>Advanced</em> la directiva interna <code>listen 8113 ssl; listen [::]:8113 ssl;</code>. Esto permite terminar TLS en el puerto 8113 y reescribir la petición finalmente hacia <code>xwmkt_ddns-backend_1:3000</code>.
+          </div></li>
         </ul>
       </section>
 
@@ -521,7 +526,8 @@ CMD ["node", "src/index.js"]</code></pre>
         <p><code>server/cli.js</code>, se ejecuta dentro del contenedor. Gestiona altas, bajas, rotación y consulta de trabajadores directamente sobre la base SQLite.</p>
         <div class="code-block">
           <div class="code-head"><span>bash</span><span>dentro del contenedor xwmkt_ddns-backend_1</span></div>
-          <pre><code>node cli.js add "Samuel" samuel   # crea el trabajador, imprime su token una vez
+          <pre><code>node cli.js add "Samuel"          # crea el trabajador con sufijo aleatorio (ej. samuel-x8k9). Genera el token una sola vez.
+node cli.js rename samuel         # si ya existía sin sufijo, añade sufijo y formatea historial forzando actualización a Cloudflare.   # crea el trabajador, imprime su token una vez
 node cli.js list                  # tabla id / name / subdomain / last_ip / created_at / updated_at
 node cli.js token samuel          # reimprime el token de un trabajador existente
 node cli.js rotate samuel         # genera un token nuevo; el anterior deja de servir al instante
@@ -757,7 +763,8 @@ curl http://localhost:3000/health   # → {"status":"ok"}</code></pre>
         <h3>5. Alta del primer trabajador</h3>
         <div class="code-block">
           <div class="code-head"><span>bash</span></div>
-          <pre><code>docker exec xwmkt_ddns-backend_1 node cli.js add "Samuel" samuel</code></pre>
+          <pre><code>docker exec xwmkt_ddns-backend_1 node cli.js add "Samuel"          # crea el trabajador con sufijo aleatorio (ej. samuel-x8k9). Genera el token una sola vez.
+node cli.js rename samuel         # si ya existía sin sufijo, añade sufijo y formatea historial forzando actualización a Cloudflare.</code></pre>
         </div>
       </section>
 
@@ -837,7 +844,8 @@ rm -rf /Library/Caches/com.apple.iconservices.store; killall Finder</code></pre>
           <li>El token del trabajador ya no vive en el <code>localStorage</code> del WebView — ver <a href="#frontend-seguridad">Endurecimiento de seguridad</a>. Sigue sin ser un almacén cifrado por el sistema operativo; eso queda como mejora pendiente explicada más abajo.</li>
           <li>La app tiene una <strong>Content-Security-Policy activa</strong> (antes era <code>null</code>) que limita a qué dominios puede conectarse y qué puede cargar el WebView.</li>
           <li>El backend tiene <strong>rate limiting</strong> (30 req/min por IP en <code>/api/*</code>) y <strong>CORS restringido</strong> a los orígenes reales del WebView de Tauri — ver <a href="#backend-hardening">Endurecimiento del backend</a>.</li>
-          <li>Transporte siempre por <code>https://ddns.xwmkt.com</code> con Let's Encrypt — el fallback <code>http://</code> es solo para depurar, nunca para producción.</li>
+          <li>Transporte siempre por <code>https://ddns.xwmkt.com:8113</code> con Let's Encrypt.</li>
+          <li><strong>Protección contra DNS Enumeration:</strong> Para que rastreadores de bot/ataques no puedan escanear IPs probando nombres estándar, todos los dominios generados por la CLI por defecto terminan en un sufijo aleatorio de 6 dígitos irrepetible (ej. <code>daniel-a7f9x2.watermelon...</code>).</li>
           <li>Tauri declara permisos mínimos (<code>core:default</code>, <code>opener:default</code>, <code>store:default</code>) — sin acceso a sistema de archivos ni a ejecución de comandos del sistema operativo.</li>
           <li>El backend corre en el contenedor como usuario sin privilegios (<code>node</code>, no <code>root</code>), en una imagen final sin herramientas de compilación.</li>
           <li>Los tokens se pueden rotar con <code>node cli.js rotate &lt;subdominio&gt;</code> sin dar de baja y de alta al trabajador.</li>
