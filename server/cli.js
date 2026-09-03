@@ -9,6 +9,17 @@ function genSuffix(length = 6) {
   return crypto.randomBytes(length).toString("hex").slice(0, length);
 }
 
+const path = require("path");
+const fs = require("fs");
+const HOSTNAMES_FILE = path.join(__dirname, "data", "hostnames.txt");
+
+function syncHostnamesFile() {
+  const baseDomain = process.env.DOMAIN || "watermelonmarketing.com";
+  const rows = db.prepare("SELECT subdomain FROM workers ORDER BY id").all();
+  const lines = rows.map((r) => `${r.subdomain}.${baseDomain}`).join("\n");
+  fs.writeFileSync(HOSTNAMES_FILE, lines ? lines + "\n" : "");
+}
+
 function printUsage() {
   console.log(`
 Uso:
@@ -18,6 +29,7 @@ Uso:
   node cli.js token <subdominio>              Muestra el token de un trabajador existente
   node cli.js rotate <subdominio>             Genera un token nuevo e invalida el anterior
   node cli.js rename <subdominio> [nuevo]     Cambia el subdominio de un trabajador (si se omite nuevo, le pone sufijo aleatorio)
+  node cli.js sync-hostnames                  Regenera data/hostnames.txt (lo usa xwmkt.php para el firewall)
 `);
 }
 
@@ -42,6 +54,7 @@ if (cmd === "add") {
     console.log(`  Subdominio: ${subdomain}.watermelonmarketing.com`);
     console.log(`  Token:      ${token}`);
     console.log(`\nEntrega este token al trabajador para que lo pegue en la app.`);
+    syncHostnamesFile();
   } catch (err) {
     console.error("Error:", err.message);
     process.exit(1);
@@ -61,6 +74,7 @@ if (cmd === "add") {
   }
   const result = db.prepare("DELETE FROM workers WHERE subdomain = ?").run(subdomain);
   console.log(result.changes > 0 ? "Eliminado." : "No se encontró ese subdominio.");
+  if (result.changes > 0) syncHostnamesFile();
 } else if (cmd === "token") {
   const [subdomain] = args;
   const worker = db.prepare("SELECT token FROM workers WHERE subdomain = ?").get(subdomain);
@@ -103,6 +117,10 @@ if (cmd === "add") {
   console.log(`  Antes: ${oldSubdomain}.watermelonmarketing.com`);
   console.log(`  Ahora: ${newSubdomain}.watermelonmarketing.com`);
   console.log(`\nLa app del trabajador se actualizará automáticamente en la siguiente comprobación sin necesidad de tocar su PC.`);
+  syncHostnamesFile();
+} else if (cmd === "sync-hostnames") {
+  syncHostnamesFile();
+  console.log(`Fichero de hostnames sincronizado: ${HOSTNAMES_FILE}`);
 } else {
   printUsage();
 }
